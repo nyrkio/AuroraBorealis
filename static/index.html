@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>kuutar v0</title>
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; color: #cdd; font-family: sans-serif; }
+    #legend { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.55); padding: 8px 12px; border-radius: 6px; font-size: 12px; }
+    #graph { width: 100vw; height: 100vh; }
+    .shape-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
+    .swatch { display: inline-block; width: 14px; text-align: center; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="legend">
+    <strong>kuutar v0</strong><br/>
+    <div class="shape-row"><span class="swatch">●</span> duration (s/ms/ns)</div>
+    <div class="shape-row"><span class="swatch">◯</span> throughput (ops/s)</div>
+    <div class="shape-row"><span class="swatch">■</span> size (bytes)</div>
+    <div class="shape-row"><span class="swatch">▬</span> ratio (%)</div>
+    <div class="shape-row"><span class="swatch">◆</span> count</div>
+    <div id="status" style="margin-top:6px; opacity:0.7;"></div>
+  </div>
+  <div id="graph"></div>
+
+  <script type="module">
+    import { Kuutar } from "./kuutar.js";
+    const container = document.getElementById("graph");
+    const status = document.getElementById("status");
+    const k = new Kuutar(container);
+    k.narrator.subscribe(e => {
+      if (e.type === "render_complete") {
+        status.textContent = `${e.point_count} points across ${e.series_count} series`;
+      }
+    });
+    const url = new URLSearchParams(location.search).get("repo") || "/api/v3/tests/gh/demo/bench";
+    k.fetchAndRender(url).catch(err => {
+      status.textContent = "error: " + err.message;
+    });
+  </script>
+</body>
+</html>
