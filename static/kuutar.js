@@ -291,14 +291,18 @@ export class Kuutar {
     const keys = [...series.keys()].sort(
       (a, b) => series.get(a).variance - series.get(b).variance,
     );
-    const zStep = keys.length > 1 ? this.axisZ / (keys.length - 1) : 0;
+    const zStep = keys.length > 1 ? this.axisZ / (keys.length - 1) : this.axisZ;
 
-    // Marker size: aim for 50% empty space between neighbors in Z. Clamped
-    // so a single-series view doesn't produce a giant blob, and so many-series
-    // views don't shrink below a legible minimum.
-    const GAP_FRACTION = 0.5;
-    const sizeByZ = keys.length > 1 ? (zStep * (1 - GAP_FRACTION)) / 2 : 0.04;
-    const markerSize = Math.max(0.004, Math.min(0.04, sizeByZ));
+    // Marker size adapts to density: it keys off the TIGHTER of the Z-spacing
+    // (series neighbors) and the X-spacing (time neighbors), so sparse data
+    // gets bigger markers and dense data shrinks. The multiplier 0.1875 gives
+    // ~50% gap between touching neighbors, further reduced by 25%.
+    const maxPointsPerSeries = Math.max(
+      1, ...[...series.values()].map(s => s.values.length),
+    );
+    const xStep = this.axisX / Math.max(1, maxPointsPerSeries - 1);
+    const tight = Math.min(zStep, xStep);
+    const markerSize = Math.max(0.003, Math.min(0.03, tight * 0.1875));
 
     keys.forEach((k, zi) => {
       const s = series.get(k);
