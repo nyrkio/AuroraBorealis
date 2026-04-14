@@ -120,7 +120,7 @@ export class Kuutar {
     // Horizontal half-width needed at target depth: (axisX / 2) / fillFraction.
     // Horizontal frustum half-width at distance d = d * tan(fov/2) * aspect.
     const distance = (this.axisX / 2 / fillFraction) / (Math.tan(fovRad / 2) * aspect);
-    const az = (5 * Math.PI) / 180;
+    const az = (30 * Math.PI) / 180;
     const el = (20 * Math.PI) / 180;
     this.camera.position.set(
       target.x + distance * Math.cos(el) * Math.sin(az),
@@ -152,6 +152,15 @@ export class Kuutar {
 
     this.pointsGroup = new THREE.Group();
     this.scene.add(this.pointsGroup);
+
+    // Hover/picking state.
+    this._seriesLines = [];   // zi -> Line (populated each render)
+    this._hoveredZi = -1;
+    this._lineBaseOpacity = 0.10;
+    this._raycaster = new THREE.Raycaster();
+    this._mouseNdc = new THREE.Vector2();
+    this.renderer.domElement.addEventListener("pointermove", (e) => this._onPointerMove(e));
+    this.renderer.domElement.addEventListener("pointerleave", () => this._clearHover());
 
     // Resize handling.
     window.addEventListener("resize", () => this._onResize());
@@ -228,6 +237,8 @@ export class Kuutar {
       c.geometry?.dispose();
       c.material?.dispose();
     }
+    this._seriesLines = [];
+    this._hoveredZi = -1;
     if (!runs || runs.length === 0) return;
 
     // Gather series (test_name, metric_name) -> info.
@@ -293,6 +304,10 @@ export class Kuutar {
       const s = series.get(k);
       const kind = unitToKind(s.unit, s.metric);
       const geo = geometryFor(kind, markerSize);
+      // Collect positions for the connecting line (string-of-pearls).
+      // Line color is per-series (categorical palette), independent of the
+      // time-based point colors — gives each series a distinct identity thread.
+      const linePos = [];
       for (let i = 0; i < s.values.length; i++) {
         const ts = s.times[i];
         // X mapping: primary window -> [0, axisX], older data -> negative X.
@@ -329,16 +344,89 @@ export class Kuutar {
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(x, y, z);
         mesh.userData = {
-          series: k, value: s.values[i], timestamp: s.times[i], test_name: s.test_name,
+          series: k, zi, value: s.values[i], timestamp: s.times[i], test_name: s.test_name,
         };
         this.pointsGroup.add(mesh);
+
+        linePos.push(x, y, z);
+      }
+
+      // Categorical palette — D3 category10 extended. Neighboring series get
+      // strongly different hues so the threads visibly alternate.
+      const SERIES_PALETTE = [
+        0x4e79a7, 0xf28e2c, 0xe15759, 0x76b7b2, 0x59a14f,
+        0xedc949, 0xaf7aa1, 0xff9da7, 0x9c755f, 0xbab0ab,
+        0x6baed6, 0xfd8d3c,
+      ];
+      if (linePos.length >= 6) {
+        const lineGeo = new THREE.BufferGeometry();
+        lineGeo.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
+        const hex = SERIES_PALETTE[zi % SERIES_PALETTE.length];
+        const seriesColor = _srgb(((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255);
+        const lineMat = new THREE.LineBasicMaterial({
+          color: seriesColor, transparent: true, opacity: this._lineBaseOpacity, depthWrite: false,
+        });
+        const line = new THREE.Line(lineGeo, lineMat);
+        this.pointsGroup.add(line);
+        this._seriesLines[zi] = line;
       }
     });
 
     this.narrator.emit({ type: "render_complete", series_count: keys.length, point_count: this.pointsGroup.children.length });
   }
 
+  _onPointerMove(e) {
+    if (this._seriesLines.length === 0) return;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this._mouseNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    this._mouseNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+    this._raycaster.setFromCamera(this._mouseNdc, this.camera);
+    // Only hit marker meshes, not lines (easier to target, more forgiving).
+    const meshes = this.pointsGroup.children.filter(c => c.isMesh);
+    const hits = this._raycaster.intersectObjects(meshes, false);
+    const zi = hits.length > 0 ? hits[0].object.userData.zi : -1;
+    if (zi !== this._hoveredZi) {
+      this._hoveredZi = zi;
+      this._applyHoverState();
+    }
+  }
+
+  _clearHover() {
+    if (this._hoveredZi === -1) return;
+    this._hoveredZi = -1;
+    this._applyHoverState();
+  }
+
+  _applyHoverState() {
+    const HOT = 0.85, WARM = 0.55, DIM = 0.08;
+    for (let i = 0; i < this._seriesLines.length; i++) {
+      const line = this._seriesLines[i];
+      if (!line) continue;
+      let op;
+      if (this._hoveredZi === -1) {
+        op = this._lineBaseOpacity;
+      } else {
+        const d = Math.abs(i - this._hoveredZi);
+        op = d === 0 ? HOT : (d === 1 ? WARM : DIM);
+      }
+      line.userData._targetOpacity = op;
+    }
+  }
+
   _animate() {
+    // Hover ease: snap *up* to the highlight instantly, but glide *down*
+    // over ~2.5s so de-hovered series don't flash off like lightning.
+    const FADE_DOWN = 0.02;
+    for (const line of this._seriesLines) {
+      if (!line || line.userData._targetOpacity == null) continue;
+      const cur = line.material.opacity;
+      const tgt = line.userData._targetOpacity;
+      if (tgt >= cur) {
+        line.material.opacity = tgt;
+      } else if (cur - tgt > 0.001) {
+        line.material.opacity = cur + (tgt - cur) * FADE_DOWN;
+      }
+    }
     this.camController.update();
     this.renderer.render(this.scene, this.camera);
     requestAnimationFrame(this._animate);

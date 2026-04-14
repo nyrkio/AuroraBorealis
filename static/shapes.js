@@ -36,7 +36,13 @@ export function unitToKind(unit, name = "") {
 // so markers don't overlap between neighboring series).
 const GEOMETRIES = {
   duration:   (size) => new THREE.SphereGeometry(size, 12, 8),
-  throughput: (size) => new THREE.TorusGeometry(size, size * 0.4, 6, 12),
+  throughput: (size) => {
+    // Cone pointing toward +X (direction of flowing time). Tall and narrow
+    // so it reads as a dart / arrow rather than a blob.
+    const g = new THREE.ConeGeometry(size * 0.7, size * 2.2, 10);
+    g.rotateZ(-Math.PI / 2);
+    return g;
+  },
   size:       (size) => new THREE.BoxGeometry(size * 1.4, size * 1.4, size * 1.4),
   ratio:      (size) => new THREE.CylinderGeometry(size, size, size * 0.3, 12),
   count:      (size) => new THREE.OctahedronGeometry(size),
