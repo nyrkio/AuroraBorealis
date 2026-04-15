@@ -240,6 +240,25 @@ export class Kuutar {
     this.pointsGroup = new THREE.Group();
     this.scene.add(this.pointsGroup);
 
+    // Vertical "time cursor" plane perpendicular to X. Snaps to the X of
+    // the nearest-hovered marker to highlight a specific moment and the
+    // column of points (one per series) that share it.
+    const cursorGeo = new THREE.PlaneGeometry(this.axisZ * 1.6, this.axisY * 1.6);
+    cursorGeo.rotateY(Math.PI / 2);
+    const cursorMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.018,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this._cursorPlane = new THREE.Mesh(cursorGeo, cursorMat);
+    this._cursorPlane.position.set(0, this.axisY / 2, this.axisZ / 2);
+    this._cursorPlane.visible = false;
+    this.scene.add(this._cursorPlane);
+    this._columnMeshes = null;
+    this._byIdx = new Map();
+
     // Hover/picking state.
     this._seriesLines = [];   // zi -> Line (populated each render)
     this._cpBeforeLines = []; // zi -> Line2 for the pre-change-point segment (optional)
@@ -332,6 +351,9 @@ export class Kuutar {
     this._changePoints = [];
     this._hoveredZi = -1;
     this._hoveredMesh = null;
+    this._columnMeshes = null;
+    this._byIdx = new Map();
+    if (this._cursorPlane) this._cursorPlane.visible = false;
     if (!runs || runs.length === 0) return;
 
     // Gather series (test_name, metric_name) -> info.
@@ -507,6 +529,10 @@ export class Kuutar {
           } : {}),
         };
         this.pointsGroup.add(mesh);
+        // Column index: meshes with the same `i` share a time/commit; used
+        // by the time-cursor highlight to snap them all to full opacity.
+        if (!this._byIdx.has(i)) this._byIdx.set(i, []);
+        this._byIdx.get(i).push(mesh);
         linePos.push(x, y, z);
       }
 
@@ -618,12 +644,38 @@ export class Kuutar {
       prev.scale.setScalar(prev.userData.baseScale || 1);
     }
     this._hoveredMesh = mesh;
+    this._updateTimeCursor(mesh);
     if (mesh) {
-      // Hover scale: 1.6x on top of base — normal points pop to 1.6x,
-      // change points (base=2) grow to 3.2x. Enough to read at any angle.
-      mesh.scale.setScalar((mesh.userData.baseScale || 1) * 1.6);
+      // Hover scale wins over column scale if it's bigger (CP markers:
+      // 3.2). For normal points both land at 2×, matching the column.
+      const base = mesh.userData.baseScale || 1;
+      mesh.scale.setScalar(Math.max(base * 1.6, 4));
       this.narrator.emit({ type: "point_hovered", point: mesh.userData });
     }
+  }
+
+  _updateTimeCursor(mesh) {
+    // Restore opacity + scale on the previously highlighted column.
+    if (this._columnMeshes) {
+      for (const m of this._columnMeshes) {
+        if (m.userData._baseOpacity != null) m.material.opacity = m.userData._baseOpacity;
+        m.scale.setScalar(m.userData.baseScale || 1);
+      }
+      this._columnMeshes = null;
+    }
+    if (!mesh) {
+      this._cursorPlane.visible = false;
+      return;
+    }
+    this._cursorPlane.position.x = mesh.position.x;
+    this._cursorPlane.visible = true;
+    const col = this._byIdx.get(mesh.userData.idx) || [];
+    for (const m of col) {
+      if (m.userData._baseOpacity == null) m.userData._baseOpacity = m.material.opacity;
+      m.material.opacity = 1.0;
+      m.scale.setScalar(Math.max(m.userData.baseScale || 1, 4));
+    }
+    this._columnMeshes = col;
   }
 
   _clearHover() {
