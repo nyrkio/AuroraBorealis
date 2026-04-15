@@ -11,7 +11,7 @@ import os
 import random
 import sys
 
-from nyrkiov3_v0.app import build_app
+from nyrkiov3_v0.app import build_app, DEFAULT_SNAPSHOT_PATH
 
 
 AUTHORS = [
@@ -165,8 +165,17 @@ def _seed_demo(app):
 
 
 def main():
-    app = build_app()
-    _seed_demo(app)
+    # Persist to /home/claude/data so real data we later ingest (Turso,
+    # UnoDB) survives restarts. On first run the store is empty and we
+    # seed the synthetic demo; subsequent runs reload the snapshot.
+    # Delete the snapshot file to start over.
+    app = build_app(snapshot_path=DEFAULT_SNAPSHOT_PATH)
+    if app.store.collection("test_runs").count() == 0:
+        _seed_demo(app)
+        print(f"seeded demo data; snapshotting to {DEFAULT_SNAPSHOT_PATH}")
+    else:
+        n = app.store.collection("test_runs").count()
+        print(f"restored {n} runs from {DEFAULT_SNAPSHOT_PATH}")
     here = os.path.dirname(os.path.abspath(__file__))
     app.static("/", os.path.join(here, "static"))
 
