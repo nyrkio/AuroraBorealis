@@ -170,12 +170,15 @@ def main():
     # seed the synthetic demo; subsequent runs reload the snapshot.
     # Delete the snapshot file to start over.
     app = build_app(snapshot_path=DEFAULT_SNAPSHOT_PATH)
-    if app.store.collection("test_runs").count() == 0:
+    runs = app.store.collection("test_runs")
+    # Seed demo data if its namespace specifically is missing, so real
+    # ingested data (UnoDB etc.) in the same store doesn't block it.
+    demo_count = runs.count({"absolute_name": "gh/demo/bench"})
+    if demo_count == 0:
         _seed_demo(app)
         print(f"seeded demo data; snapshotting to {DEFAULT_SNAPSHOT_PATH}")
-    else:
-        n = app.store.collection("test_runs").count()
-        print(f"restored {n} runs from {DEFAULT_SNAPSHOT_PATH}")
+    n = runs.count()
+    print(f"store has {n} runs (from {DEFAULT_SNAPSHOT_PATH})")
     here = os.path.dirname(os.path.abspath(__file__))
     app.static("/", os.path.join(here, "static"))
 

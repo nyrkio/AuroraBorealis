@@ -409,7 +409,12 @@ export class Kuutar {
     return sprite;
   }
 
-  render(runs) {
+  render(runs, opts = {}) {
+    // Cache so `setPage` can re-render the same data with a different
+    // window offset without another fetch.
+    this._lastRuns = runs;
+    if (opts.pageStart != null) this._pageStart = opts.pageStart;
+    if (this._pageStart == null) this._pageStart = 0;
     // Clear previous.
     while (this.pointsGroup.children.length) {
       const c = this.pointsGroup.children.pop();
@@ -508,33 +513,79 @@ export class Kuutar {
       s.variance = variance(s.values.map(v => v / denom));
     }
 
-    // Order series so low-variance sits in back (small Z), high-variance in front.
-    const keys = [...series.keys()].sort(
+    // Order series so low-variance sits in back (small Z), high-variance
+    // in front. Hard cap on rendered series: past ~100 the Z-axis
+    // crowding makes the scene unreadable and the browser slow. User
+    // sees "top N by variance"; the rest are omitted from render for
+    // now (future: scroll the legend to page through them).
+    const MAX_SERIES = 200;
+    const sorted = [...series.keys()].sort(
       (a, b) => series.get(b).variance - series.get(a).variance,
     );
+    const totalSeries = sorted.length;
+    // Clamp page window so it always lands on a valid range. The last
+    // page is [max(0, total - MAX), total); earlier pages are full.
+    const pageStart = Math.max(
+      0, Math.min(this._pageStart, Math.max(0, totalSeries - MAX_SERIES)));
+    this._pageStart = pageStart;
+    const keys = sorted.slice(pageStart, pageStart + MAX_SERIES);
     const zStep = keys.length > 1 ? this.axisZ / (keys.length - 1) : this.axisZ;
 
-    // Marker size keys off Z-spacing alone now — X spacing is bounded
-    // independently (see xStep below) so markers won't overlap along X.
-    const markerSize = Math.max(0.0045, Math.min(0.045, zStep * 0.28));
-
-    // X mapping is ordinal, not proportional to wall-clock time. Build
-    // the globally-sorted list of distinct commit times; each commit
-    // gets an index. Spacing between consecutive commits is bounded
-    // above at 10 × markerSize so a handful of commits sit close rather
-    // than stretched across the whole axis; dense data (many commits)
-    // uses natural axisX / (N-1) spacing and fills the axis. Newest
-    // commit always anchors at x = axisX.
+    // Marker size scales to neighbor spacing — literally: half the
+    // tighter of the Z-spacing (series) and the natural X-spacing
+    // (commits). No floor; if the data is dense, markers shrink to
+    // fit. Upper bound 0.045 for the sparse-two-series case.
     const allTimesSet = new Set();
     for (const run of runs) allTimesSet.add(new Date(_tsOf(run)).getTime());
     const commitTimes = [...allTimesSet].sort((a, b) => a - b);
     const nCommits = commitTimes.length;
-    const naturalXStep = nCommits > 1 ? this.axisX / (nCommits - 1) : 0;
-    const xStep = Math.min(naturalXStep, markerSize * 10);
-    const xByTs = new Map(commitTimes.map(
-      (t, i) => [t, this.axisX - (nCommits - 1 - i) * xStep]
-    ));
+    const xSpacingNatural = nCommits > 1 ? this.axisX / (nCommits - 1) : this.axisX;
+    const markerSize = Math.min(0.045, Math.min(zStep, xSpacingNatural) * 0.45);
+
+    // X mapping is ordinal. Spacing bounded above at 50 × markerSize
+    // so sparse datasets still cluster (not stretched across the whole
+    // axis) but can breathe — with a handful of commits the old 10×
+    // bound packed them together uncomfortably. Dense data uses
+    // natural spacing. Oldest commit anchors at x = 0, newest at
+    // (N-1) × xStep — data grows rightward.
+    const xStep = Math.min(xSpacingNatural, markerSize * 50);
+    const xByTs = new Map(commitTimes.map((t, i) => [t, i * xStep]));
     const globalIdxByTs = new Map(commitTimes.map((t, i) => [t, i]));
+
+    // Enlargement caps. A hovered / column / CP marker must never draw
+    // larger than these fractions of neighbor spacing, so we never see
+    // overlap in dense data. Stored on the instance so `_applyMeshState`
+    // can use them for every per-mesh update between renders.
+    // Highlighted markers cap by category. Plain 1→2.5 and CP 2→5
+    // give the same 2.5× pop on highlight. A CP that is BOTH in the
+    // selected column AND the direct hover target pops further (→ 7),
+    // since it's the single most interesting point on screen at that
+    // moment. Crowded scenes will overlap a neighbor or two —
+    // accepted cost.
+    this._markerMaxScale = 2.5;
+    this._markerMaxScaleCP = 5;
+    this._markerMaxScaleCPFocus = 7;
+
+    // First-data render: re-center orbit on the data. The constructor
+    // targets scene-center, which was fine when data filled the axis;
+    // with the newest-anchored ordinal mapping, sparse data clusters at
+    // the right edge and rotation feels over-sensitive because the
+    // pivot has a long arm to the visible cluster. Shift target +
+    // camera by the same delta so the user keeps their relative pose
+    // but the orbit now pivots on what they're looking at. We only do
+    // this once; filter changes keep the user's view.
+    if (!this._didInitialCenter && nCommits > 0) {
+      this._didInitialCenter = true;
+      // Data spans [0, (N-1) × xStep]; orbit pivot at its midpoint.
+      const cx = (nCommits - 1) * xStep / 2;
+      const newTarget = new THREE.Vector3(cx, this.axisY / 2, this.axisZ / 2);
+      const controls = this.camController.controls;
+      const delta = newTarget.clone().sub(controls.target);
+      this.camera.position.add(delta);
+      controls.target.copy(newTarget);
+      controls.update();
+      this._initialCamOffset = this.camera.position.clone().sub(newTarget);
+    }
 
     // Regression/improvement colors for change-point markers.
     const CP_REGRESSION = _srgb(1.00, 0.32, 0.32);   // light red
@@ -642,6 +693,7 @@ export class Kuutar {
           baseScale,
           _baseOpacity: mat.opacity,
           isChangePoint: isCp,
+          isCpNeighbor: isPreCp,
           ...(isCp ? {
             cpBefore: cp.before, cpAfter: cp.after,
             cpDeltaPct, regression: cpIsRegression,
@@ -691,16 +743,19 @@ export class Kuutar {
           const cpCol = cpIsRegression ? CP_REGRESSION : CP_IMPROVEMENT;
           const beforeMat = new LineMaterial({
             color: cpCol,
-            linewidth: 2,
+            linewidth: 3.5,
             transparent: true,
-            opacity: 0.45,
+            opacity: 0.7,
             depthWrite: false,
           });
           beforeMat.resolution.set(w, h);
           const beforeGeo = new LineGeometry();
           beforeGeo.setPositions(beforePos);
           const beforeLine = new Line2(beforeGeo, beforeMat);
-          beforeLine.userData = { baseOpacity: 0.45, baseWidth: 2 };
+          // Draw above the tier-colored main line so the CP segment stays
+          // red/green even when the main line thickens to HOT width.
+          beforeLine.renderOrder = 10;
+          beforeLine.userData = { baseOpacity: 0.7, baseWidth: 3.5 };
           this.pointsGroup.add(beforeLine);
           this._cpBeforeLines[zi] = beforeLine;
         }
@@ -710,6 +765,9 @@ export class Kuutar {
     this.narrator.emit({
       type: "render_complete",
       series_count: keys.length,
+      total_series: totalSeries,
+      page_start: pageStart,
+      page_size: MAX_SERIES,
       point_count: this.pointsGroup.children.length,
       series: this.getSeries(),
       change_points: this._changePoints.length,
@@ -823,9 +881,26 @@ export class Kuutar {
       if (inLocked || inHover) {
         scale += m.userData.isChangePoint ? 3 : 1;
       } else {
-        scale = Math.max(scale, base * 1.6);
+        // Hovered off-column: grow to 3× default so the affordance
+        // matches what the demo used. The 3-cap covers us if any
+        // base is high enough to make 3× base overshoot.
+        scale = Math.max(scale, base * 3);
       }
     }
+    // Cap by category: plain → 2.5, CP/preCP → 5, CP that's BOTH the
+    // hover subject AND in the selected column → 7 so it stands out
+    // in its own row.
+    const isBig = m.userData.isChangePoint || m.userData.isCpNeighbor;
+    let cap;
+    if (isBig) {
+      const hotInCol = isHot && (inLocked || inHover);
+      cap = hotInCol
+        ? (this._markerMaxScaleCPFocus ?? this._markerMaxScaleCP ?? Infinity)
+        : (this._markerMaxScaleCP ?? Infinity);
+    } else {
+      cap = this._markerMaxScale ?? Infinity;
+    }
+    scale = Math.min(scale, cap);
     m.material.opacity = opacity;
     m.scale.setScalar(scale);
   }
@@ -1179,6 +1254,11 @@ export class Kuutar {
     }
   }
 
+  setPage(pageStart) {
+    if (!this._lastRuns) return;
+    this.render(this._lastRuns, { pageStart });
+  }
+
   async fetchAndRender(url) {
     // Pull server config first so `startFlyover` can honour the
     // `recent_cp_days` window. A missing endpoint just leaves defaults
@@ -1192,7 +1272,10 @@ export class Kuutar {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
     const runs = await res.json();
-    this.render(runs);
+    // A fresh fetch always lands on page 0 — filter changes shouldn't
+    // leave the view stuck on a high-variance page 4 that no longer
+    // exists in the narrowed slice.
+    this.render(runs, { pageStart: 0 });
     return runs;
   }
 }
