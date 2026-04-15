@@ -75,6 +75,18 @@ function pastColor(t) {
   return boundary;
 }
 
+// Categorical palette for per-series line colors. Exposed so the HTML legend
+// can draw matching swatches next to each series name.
+export const SERIES_PALETTE = [
+  0x4e79a7, 0xf28e2c, 0xe15759, 0x76b7b2, 0x59a14f,
+  0xedc949, 0xaf7aa1, 0xff9da7, 0x9c755f, 0xbab0ab,
+  0x6baed6, 0xfd8d3c,
+];
+
+export function seriesHexColor(zi) {
+  return SERIES_PALETTE[zi % SERIES_PALETTE.length];
+}
+
 function variance(xs) {
   if (xs.length < 2) return 0;
   const mean = xs.reduce((a, b) => a + b, 0) / xs.length;
@@ -109,7 +121,7 @@ export class Kuutar {
     const aspect = Math.max(1, w / h);
     this.axisX = AXIS_LEN * aspect;
     this.axisY = AXIS_LEN * 0.7;
-    this.axisZ = AXIS_LEN;
+    this.axisZ = AXIS_LEN * 1.1;
 
     // Frame the primary window by its actual X extent (not the bounding sphere,
     // which over-zooms and leaves dead space on wide screens since the box is
@@ -238,6 +250,7 @@ export class Kuutar {
       c.material?.dispose();
     }
     this._seriesLines = [];
+    this._seriesInfo = [];
     this._hoveredZi = -1;
     if (!runs || runs.length === 0) return;
 
@@ -302,12 +315,15 @@ export class Kuutar {
     );
     const xStep = this.axisX / Math.max(1, maxPointsPerSeries - 1);
     const tight = Math.min(zStep, xStep);
-    const markerSize = Math.max(0.003, Math.min(0.03, tight * 0.1875));
+    const markerSize = Math.max(0.0045, Math.min(0.045, tight * 0.28));
 
     keys.forEach((k, zi) => {
       const s = series.get(k);
       const kind = unitToKind(s.unit, s.metric);
       const geo = geometryFor(kind, markerSize);
+      this._seriesInfo[zi] = {
+        key: k, zi, name: `${s.test_name} · ${s.metric}`, color: seriesHexColor(zi),
+      };
       // Collect positions for the connecting line (string-of-pearls).
       // Line color is per-series (categorical palette), independent of the
       // time-based point colors — gives each series a distinct identity thread.
@@ -355,17 +371,10 @@ export class Kuutar {
         linePos.push(x, y, z);
       }
 
-      // Categorical palette — D3 category10 extended. Neighboring series get
-      // strongly different hues so the threads visibly alternate.
-      const SERIES_PALETTE = [
-        0x4e79a7, 0xf28e2c, 0xe15759, 0x76b7b2, 0x59a14f,
-        0xedc949, 0xaf7aa1, 0xff9da7, 0x9c755f, 0xbab0ab,
-        0x6baed6, 0xfd8d3c,
-      ];
       if (linePos.length >= 6) {
         const lineGeo = new THREE.BufferGeometry();
         lineGeo.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
-        const hex = SERIES_PALETTE[zi % SERIES_PALETTE.length];
+        const hex = seriesHexColor(zi);
         const seriesColor = _srgb(((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255);
         const lineMat = new THREE.LineBasicMaterial({
           color: seriesColor, transparent: true, opacity: this._lineBaseOpacity, depthWrite: false,
@@ -376,7 +385,23 @@ export class Kuutar {
       }
     });
 
-    this.narrator.emit({ type: "render_complete", series_count: keys.length, point_count: this.pointsGroup.children.length });
+    this.narrator.emit({
+      type: "render_complete",
+      series_count: keys.length,
+      point_count: this.pointsGroup.children.length,
+      series: this.getSeries(),
+    });
+  }
+
+  getSeries() {
+    return this._seriesInfo.slice();
+  }
+
+  hoverSeries(zi) {
+    const v = (zi == null || zi < 0) ? -1 : zi;
+    if (v === this._hoveredZi) return;
+    this._hoveredZi = v;
+    this._applyHoverState();
   }
 
   _onPointerMove(e) {
@@ -389,16 +414,11 @@ export class Kuutar {
     const meshes = this.pointsGroup.children.filter(c => c.isMesh);
     const hits = this._raycaster.intersectObjects(meshes, false);
     const zi = hits.length > 0 ? hits[0].object.userData.zi : -1;
-    if (zi !== this._hoveredZi) {
-      this._hoveredZi = zi;
-      this._applyHoverState();
-    }
+    this.hoverSeries(zi);
   }
 
   _clearHover() {
-    if (this._hoveredZi === -1) return;
-    this._hoveredZi = -1;
-    this._applyHoverState();
+    this.hoverSeries(-1);
   }
 
   _applyHoverState() {
@@ -415,6 +435,7 @@ export class Kuutar {
       }
       line.userData._targetOpacity = op;
     }
+    this.narrator.emit({ type: "hover_changed", zi: this._hoveredZi });
   }
 
   _animate() {

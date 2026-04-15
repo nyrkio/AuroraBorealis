@@ -4,11 +4,29 @@
   <meta charset="utf-8" />
   <title>kuutar v0</title>
   <style>
-    html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; color: #cdd; font-family: sans-serif; }
-    #legend { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.55); padding: 8px 12px; border-radius: 6px; font-size: 12px; }
-    #graph { width: 100vw; height: 100vh; }
+    html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; color: #cdd; font-family: sans-serif; overflow: hidden; }
+    #graph { position: absolute; inset: 0; }
+
+    #legend { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.55); padding: 8px 12px; border-radius: 6px; font-size: 12px; z-index: 2; }
     .shape-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
     .swatch { display: inline-block; width: 14px; text-align: center; }
+
+    #series-panel {
+      position: absolute; left: 0; top: 160px; bottom: 8px; width: 210px;
+      padding: 8px 12px;
+      font-size: 11px; color: #cdd; z-index: 2;
+      overflow-y: auto;
+      background: linear-gradient(to right, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0) 100%);
+    }
+    #series-panel h3 { margin: 0 0 6px 0; font-size: 11px; font-weight: 600; opacity: 0.7; letter-spacing: 0.05em; text-transform: uppercase; }
+    #series-list { list-style: none; padding: 0; margin: 0; }
+    #series-list li {
+      padding: 2px 4px; border-radius: 3px; cursor: default;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      transition: color 0.15s;
+    }
+    #series-list li.active { color: var(--series-color, #fff); font-weight: 600; }
+    #series-list li.neighbor { color: var(--series-color, #cdd); opacity: 0.75; }
   </style>
   <script type="importmap">
   {
@@ -23,24 +41,65 @@
   <div id="legend">
     <strong>kuutar v0</strong><br/>
     <div class="shape-row"><span class="swatch">●</span> duration (s/ms/ns)</div>
-    <div class="shape-row"><span class="swatch">◯</span> throughput (ops/s)</div>
+    <div class="shape-row"><span class="swatch">▶</span> throughput (ops/s)</div>
     <div class="shape-row"><span class="swatch">■</span> size (bytes)</div>
     <div class="shape-row"><span class="swatch">▬</span> ratio (%)</div>
     <div class="shape-row"><span class="swatch">◆</span> count</div>
     <div id="status" style="margin-top:6px; opacity:0.7;"></div>
   </div>
+
+  <div id="series-panel">
+    <h3>series</h3>
+    <ul id="series-list"></ul>
+  </div>
+
   <div id="graph"></div>
 
   <script type="module">
     import { Kuutar } from "./kuutar.js";
+
     const container = document.getElementById("graph");
     const status = document.getElementById("status");
+    const list = document.getElementById("series-list");
+
     const k = new Kuutar(container);
+
+    let items = [];  // zi -> <li>
+
+    function buildLegend(series) {
+      list.innerHTML = "";
+      items = [];
+      for (const s of series) {
+        const li = document.createElement("li");
+        li.dataset.zi = s.zi;
+        li.textContent = s.name;
+        li.style.setProperty("--series-color", "#" + s.color.toString(16).padStart(6, "0"));
+        li.addEventListener("mouseenter", () => k.hoverSeries(s.zi));
+        li.addEventListener("mouseleave", () => k.hoverSeries(-1));
+        list.appendChild(li);
+        items[s.zi] = li;
+      }
+    }
+
     k.narrator.subscribe(e => {
       if (e.type === "render_complete") {
         status.textContent = `${e.point_count} points across ${e.series_count} series`;
+        buildLegend(e.series);
+      } else if (e.type === "hover_changed") {
+        for (let i = 0; i < items.length; i++) {
+          const li = items[i];
+          if (!li) continue;
+          li.classList.remove("active", "neighbor");
+          if (e.zi === -1) continue;
+          if (i === e.zi) li.classList.add("active");
+          else if (Math.abs(i - e.zi) === 1) li.classList.add("neighbor");
+        }
+        if (e.zi !== -1 && items[e.zi]) {
+          items[e.zi].scrollIntoView({ block: "nearest" });
+        }
       }
     });
+
     const url = new URLSearchParams(location.search).get("repo") || "/api/v3/tests/gh/demo/bench";
     k.fetchAndRender(url).catch(err => {
       status.textContent = "error: " + err.message;
