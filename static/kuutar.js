@@ -153,8 +153,26 @@ function variance(xs) {
   return s / xs.length;
 }
 
-function seriesKey(run, metric) {
-  return `${run.attributes?.test_name || "?"}|${metric.name}`;
+// Candidate per-run attribute keys that carve series identity when the
+// dataset actually varies along them. Facets in the UI use the same set.
+const SPLIT_ATTRS = ["runner", "workflow", "branch"];
+
+function _attrOrField(run, key) {
+  if (key === "branch") return run.branch;
+  return (run.attributes || {})[key];
+}
+
+function seriesKey(run, metric, splitBy = []) {
+  const base = `${run.attributes?.test_name || "?"}|${metric.name}`;
+  if (splitBy.length === 0) return base;
+  const extras = splitBy.map(k => _attrOrField(run, k) || "").join("|");
+  return `${base}|${extras}`;
+}
+
+function seriesLabel(test_name, metric_name, splitVals) {
+  let s = `${test_name} · ${metric_name}`;
+  if (splitVals && splitVals.length) s += " · " + splitVals.join(" · ");
+  return s;
 }
 
 function inferDirection(kind) {
@@ -418,17 +436,33 @@ export class Kuutar {
     this._flyState = "idle";
     if (!runs || runs.length === 0) return;
 
-    // Gather series (test_name, metric_name) -> info.
+    // Auto-detect which candidate attrs *vary* across the fetched runs;
+    // those become part of series identity so e.g. the same test on Intel
+    // and ARM render as two distinct series. Attrs with a single distinct
+    // value collapse out (one main branch → no split).
+    const splitBy = [];
+    for (const key of SPLIT_ATTRS) {
+      const distinct = new Set();
+      for (const run of runs) {
+        const v = _attrOrField(run, key);
+        if (v) distinct.add(v);
+        if (distinct.size > 1) break;
+      }
+      if (distinct.size > 1) splitBy.push(key);
+    }
+
+    // Gather series (test_name, metric_name, ...splitBy) -> info.
     const series = new Map();
     for (const run of runs) {
       for (const m of run.metrics || []) {
-        const k = seriesKey(run, m);
+        const k = seriesKey(run, m, splitBy);
         if (!series.has(k)) {
           series.set(k, {
             test_name: run.attributes?.test_name || "?",
             metric: m.name,
             unit: m.unit,
             direction: m.direction || inferDirection(unitToKind(m.unit, m.name)),
+            splitVals: splitBy.map(sk => _attrOrField(run, sk) || ""),
             values: [],
             times: [],
             commits: [],
@@ -501,7 +535,7 @@ export class Kuutar {
       const s = series.get(k);
       const kind = unitToKind(s.unit, s.metric);
       const geo = geometryFor(kind, markerSize);
-      const series_name = `${s.test_name} · ${s.metric}`;
+      const series_name = seriesLabel(s.test_name, s.metric, s.splitVals);
       const tier = seriesTier(zi);
       const lineHex = tierLineHex(zi);
       const tierColor = _srgb(((lineHex >> 16) & 0xff) / 255, ((lineHex >> 8) & 0xff) / 255, (lineHex & 0xff) / 255);
@@ -512,7 +546,10 @@ export class Kuutar {
       // Detect the series' most prominent step change up front so each
       // marker knows whether it is THE change point and whether that
       // change is a regression or an improvement.
-      const cp = detectChangePoint(s.values);
+      // Window adapts to series length: 7 for dense (daily) data, down
+      // to 2 for sparse data (weekly / release cadence).
+      const _W = Math.max(2, Math.min(7, Math.floor((s.values.length - 1) / 2)));
+      const cp = detectChangePoint(s.values, _W);
       let cpIdx = -1, cpDeltaPct = 0, cpIsRegression = false, cpEntry = null;
       if (cp) {
         cpIdx = cp.i;

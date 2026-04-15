@@ -55,6 +55,53 @@
     #cp-hint { position: absolute; bottom: 8px; right: 8px;
       font-size: 11px; color: #cdd; opacity: 0.5; z-index: 2; }
 
+    #filters {
+      position: absolute; top: 10px; left: 50%;
+      transform: translateX(-50%); z-index: 4;
+      display: flex; align-items: flex-end; gap: 20px;
+      padding: 10px 16px;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      color: #cdd; font-size: 11px;
+      backdrop-filter: blur(4px);
+      max-width: 80vw; flex-wrap: wrap;
+    }
+    #filters .group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    #filters .group-title { opacity: 0.6; font-size: 10px; letter-spacing: 0.05em;
+                            text-transform: uppercase; }
+    #filters .radios { display: flex; flex-direction: column; gap: 2px; }
+    #filters .radios label { display: flex; align-items: center; gap: 6px; cursor: pointer;
+                             max-width: 260px; white-space: nowrap; overflow: hidden;
+                             text-overflow: ellipsis; }
+    #filters input[type="radio"] { margin: 0; accent-color: #78c8ff; }
+    #filters .slider-group { min-width: 280px; }
+    #filters .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
+    #filters .slider-wrap input[type="range"] {
+      position: absolute; width: 100%; pointer-events: none;
+      -webkit-appearance: none; appearance: none; background: none;
+      height: 4px; top: 12px; left: 0; margin: 0;
+    }
+    #filters .slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #filters .slider-wrap input[type="range"]::-moz-range-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #filters .slider-wrap input[type="range"]::-webkit-slider-thumb {
+      pointer-events: auto; -webkit-appearance: none;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+      margin-top: -5px;
+    }
+    #filters .slider-wrap input[type="range"]::-moz-range-thumb {
+      pointer-events: auto;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+    }
+    #filters .slider-labels { display: flex; justify-content: space-between; font-size: 10px;
+                              opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+
     #flyover {
       position: absolute; bottom: 14px; left: 50%;
       transform: translateX(-50%); z-index: 4;
@@ -105,6 +152,8 @@
   </div>
 
   <div id="graph"></div>
+
+  <div id="filters" style="display: none"></div>
 
   <div id="commit-panel">
     <span class="close" id="cp-close">✕</span>
@@ -277,10 +326,161 @@
       }
     });
 
-    const url = new URLSearchParams(location.search).get("repo") || "/api/v3/tests/gh/demo/bench";
-    k.fetchAndRender(url).catch(err => {
-      status.textContent = "error: " + err.message;
-    });
+    // ---- filters bar (facets + time slider) ----------------------------
+
+    const urlParams = new URLSearchParams(location.search);
+    let repoRaw = urlParams.get("repo") || "gh/demo/bench";
+    repoRaw = repoRaw.replace(/^\/?api\/v3\/tests\//, "");
+    const [repoPath, extraQs] = repoRaw.split("?");
+    const extraParams = new URLSearchParams(extraQs || "");
+    const testsBase = `/api/v3/tests/${repoPath}`;
+    const facetsBase = `${testsBase}/facets`;
+
+    // Mutable filter state. `metric` is always present (even for demo data
+    // that has only one metric); runner / workflow / branch are populated
+    // by facets when they vary.
+    const filters = {
+      metric: urlParams.get("metric") || extraParams.get("metric") || "",
+      branch: "", workflow: "", runner: "",
+      since: "", until: "",
+    };
+
+    function buildQs(src, extraExclude = []) {
+      const parts = [];
+      for (const [k, v] of Object.entries(src)) {
+        if (v && !extraExclude.includes(k)) {
+          parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+        }
+      }
+      return parts.length ? "?" + parts.join("&") : "";
+    }
+
+    const filtersEl = document.getElementById("filters");
+
+    function extractTs(x) {
+      if (x && typeof x === "object" && "$date" in x) return new Date(x.$date).getTime();
+      if (typeof x === "string") return new Date(x).getTime();
+      return 0;
+    }
+
+    function fmtDay(ms) {
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? "?" : d.toISOString().slice(0, 10);
+    }
+
+    function renderFilters(facetsData) {
+      filtersEl.innerHTML = "";
+      // Hide the whole bar if there are no varying dims and no timestamps
+      // (e.g., empty dataset).
+      const span = facetsData.timestamp_span;
+      const varying = facetsData.varying || [];
+      if (varying.length === 0 && !span) {
+        filtersEl.style.display = "none";
+        return;
+      }
+      filtersEl.style.display = "flex";
+
+      // Radio group per varying dim.
+      for (const dim of varying) {
+        const values = facetsData.facets[dim] || [];
+        const group = document.createElement("div");
+        group.className = "group";
+        const h = document.createElement("div");
+        h.className = "group-title";
+        h.textContent = dim;
+        group.appendChild(h);
+        const radios = document.createElement("div");
+        radios.className = "radios";
+        const mkRadio = (val, label) => {
+          const id = `f-${dim}-${btoa(val || "all").replace(/=/g,"")}`;
+          const wrap = document.createElement("label");
+          wrap.setAttribute("for", id);
+          const input = document.createElement("input");
+          input.type = "radio"; input.name = `filter-${dim}`; input.id = id;
+          input.value = val;
+          input.checked = (filters[dim] === val) || (!filters[dim] && val === "");
+          input.addEventListener("change", () => {
+            filters[dim] = val;
+            void reload();
+          });
+          wrap.appendChild(input);
+          const txt = document.createTextNode(label);
+          wrap.appendChild(txt);
+          wrap.title = label;
+          radios.appendChild(wrap);
+        };
+        mkRadio("", `all (${values.length})`);
+        for (const v of values) mkRadio(v, v);
+        group.appendChild(radios);
+        filtersEl.appendChild(group);
+      }
+
+      // Time range slider.
+      if (span) {
+        const minMs = extractTs(span.min);
+        const maxMs = extractTs(span.max);
+        const day = 86400 * 1000;
+        // Snap bounds to day resolution, inclusive on both ends.
+        const lo = Math.floor(minMs / day) * day;
+        const hi = Math.ceil(maxMs / day) * day;
+        const sinceMs = filters.since ? new Date(filters.since).getTime() : lo;
+        const untilMs = filters.until ? new Date(filters.until).getTime() : hi;
+        const group = document.createElement("div");
+        group.className = "group slider-group";
+        group.innerHTML = `
+          <div class="group-title">time range</div>
+          <div class="slider-wrap">
+            <input id="f-since" type="range" min="${lo}" max="${hi}" step="${day}" value="${sinceMs}">
+            <input id="f-until" type="range" min="${lo}" max="${hi}" step="${day}" value="${untilMs}">
+          </div>
+          <div class="slider-labels">
+            <span id="f-since-label">${fmtDay(sinceMs)}</span>
+            <span id="f-until-label">${fmtDay(untilMs)}</span>
+          </div>
+        `;
+        filtersEl.appendChild(group);
+        const sinceEl = group.querySelector("#f-since");
+        const untilEl = group.querySelector("#f-until");
+        const sinceLab = group.querySelector("#f-since-label");
+        const untilLab = group.querySelector("#f-until-label");
+        const update = () => {
+          let s = +sinceEl.value, u = +untilEl.value;
+          if (s > u) {
+            // Keep the handles from crossing: snap the other side.
+            if (document.activeElement === sinceEl) untilEl.value = s;
+            else sinceEl.value = u;
+            s = +sinceEl.value; u = +untilEl.value;
+          }
+          sinceLab.textContent = fmtDay(s);
+          untilLab.textContent = fmtDay(u);
+        };
+        const commit = () => {
+          const s = +sinceEl.value, u = +untilEl.value;
+          filters.since = (s > lo) ? new Date(s).toISOString() : "";
+          filters.until = (u < hi) ? new Date(u).toISOString() : "";
+          void reload();
+        };
+        sinceEl.addEventListener("input", update);
+        untilEl.addEventListener("input", update);
+        sinceEl.addEventListener("change", commit);
+        untilEl.addEventListener("change", commit);
+      }
+    }
+
+    async function reload() {
+      try {
+        // Facets first so the sidebar reflects the current slice.
+        const fr = await fetch(facetsBase + buildQs(filters, ["since", "until"]));
+        if (!fr.ok) throw new Error(`facets: ${fr.status}`);
+        const facetsData = await fr.json();
+        renderFilters(facetsData);
+        await k.fetchAndRender(testsBase + buildQs(filters));
+      } catch (e) {
+        status.textContent = "error: " + e.message;
+      }
+    }
+
+    void reload();
   </script>
 </body>
 </html>
