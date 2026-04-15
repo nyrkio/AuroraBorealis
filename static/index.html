@@ -126,7 +126,8 @@
       return x.toFixed(3);
     }
     function fmtDate(ms) {
-      return new Date(ms).toISOString().slice(0, 10);
+      const d = new Date(ms);
+      return isNaN(d.getTime()) ? "?" : d.toISOString().slice(0, 10);
     }
     function commitDate(c, fallbackMs) {
       if (c && typeof c.commit_time === "number") return fmtDate(c.commit_time * 1000);

@@ -78,16 +78,65 @@ function pastColor(t) {
   return boundary;
 }
 
-// Categorical palette for per-series line colors. Exposed so the HTML legend
-// can draw matching swatches next to each series name.
+// Categorical palette for per-series line colors. Red / green / orange
+// are deliberately absent — those hues are reserved for change-point
+// markers (regression = red, improvement = green).
 export const SERIES_PALETTE = [
-  0x4e79a7, 0xf28e2c, 0xe15759, 0x76b7b2, 0x59a14f,
-  0xedc949, 0xaf7aa1, 0xff9da7, 0x9c755f, 0xbab0ab,
-  0x6baed6, 0xfd8d3c,
+  0x4e79a7,  // blue
+  0xc94f9e,  // magenta
+  0x6a4c93,  // indigo
+  0x76b7b2,  // teal
+  0x1b9aaa,  // cyan
+  0xedc949,  // yellow
+  0xaf7aa1,  // purple
+  0xf2b5d1,  // pale rose pink
+  0x9c755f,  // brown
+  0xbab0ab,  // gray
+  0x6baed6,  // light blue
+  0xb49ed8,  // lavender
 ];
 
 export function seriesHexColor(zi) {
   return SERIES_PALETTE[zi % SERIES_PALETTE.length];
+}
+
+// Three coloring tiers so the field reads as a starry sky, not a circus.
+// Tier A (even): original time colormap (blue → white → gray).
+// Tier B (1,5,9,…): grayscale version of the same gradient — no chroma.
+// Tier C (3,7,11,…): categorical palette, same color everywhere.
+function seriesTier(zi) {
+  if (zi % 2 === 0) return "A";
+  return (zi % 4 === 1) ? "B" : "C";
+}
+
+const TIER_A_LINE_HEX = 0x78c8ff;  // blue, matches the new-end of the colormap
+const TIER_B_LINE_HEX = 0xb8b8bc;  // neutral light gray
+
+function tierLineHex(zi) {
+  const t = seriesTier(zi);
+  if (t === "A") return TIER_A_LINE_HEX;
+  if (t === "B") return TIER_B_LINE_HEX;
+  return seriesHexColor(zi);
+}
+
+// Grayscale version of the time colormap — same luminance ramp, no hue.
+function timeGrayColor(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let i = 0; i < TIME_STOPS.length - 1; i++) {
+    const [t0, c0] = TIME_STOPS[i];
+    const [t1, c1] = TIME_STOPS[i + 1];
+    if (t <= t1) {
+      const f = (t - t0) / (t1 - t0);
+      const r = c0[0] + (c1[0] - c0[0]) * f;
+      const g = c0[1] + (c1[1] - c0[1]) * f;
+      const b = c0[2] + (c1[2] - c0[2]) * f;
+      const l = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
+      return _srgb(l, l, l);
+    }
+  }
+  const last = TIME_STOPS[TIME_STOPS.length - 1][1];
+  const l = (0.2126 * last[0] + 0.7152 * last[1] + 0.0722 * last[2]) / 255;
+  return _srgb(l, l, l);
 }
 
 function variance(xs) {
@@ -193,6 +242,7 @@ export class Kuutar {
 
     // Hover/picking state.
     this._seriesLines = [];   // zi -> Line (populated each render)
+    this._cpBeforeLines = []; // zi -> Line2 for the pre-change-point segment (optional)
     this._hoveredZi = -1;
     this._lineBaseOpacity = 0.10;
     this._lineBaseWidth = 1;  // pixels
@@ -277,6 +327,7 @@ export class Kuutar {
       c.material?.dispose();
     }
     this._seriesLines = [];
+    this._cpBeforeLines = [];
     this._seriesInfo = [];
     this._changePoints = [];
     this._hoveredZi = -1;
@@ -360,13 +411,18 @@ export class Kuutar {
     const CP_REGRESSION = _srgb(1.00, 0.32, 0.32);   // light red
     const CP_IMPROVEMENT = _srgb(0.42, 0.88, 0.48);  // light green
 
+    const DARK_BG = _srgb(0x18 / 255, 0x18 / 255, 0x1e / 255);
+
     keys.forEach((k, zi) => {
       const s = series.get(k);
       const kind = unitToKind(s.unit, s.metric);
       const geo = geometryFor(kind, markerSize);
       const series_name = `${s.test_name} · ${s.metric}`;
+      const tier = seriesTier(zi);
+      const lineHex = tierLineHex(zi);
+      const tierColor = _srgb(((lineHex >> 16) & 0xff) / 255, ((lineHex >> 8) & 0xff) / 255, (lineHex & 0xff) / 255);
       this._seriesInfo[zi] = {
-        key: k, zi, name: series_name, color: seriesHexColor(zi),
+        key: k, zi, name: series_name, color: lineHex,
       };
 
       // Detect the series' most prominent step change up front so each
@@ -386,17 +442,28 @@ export class Kuutar {
       const linePos = [];
       for (let i = 0; i < s.values.length; i++) {
         const ts = s.times[i];
+        // Marker color by tier. A/B use a time-based gradient (color/gray);
+        // C holds the palette color steady. All tiers fade toward dark in
+        // the past so depth/age still reads.
         let x, color, emissiveFactor;
         if (ts >= primaryStart) {
           const t = (ts - primaryStart) / primarySpan;
           x = t * this.axisX;
-          color = timeColor(t);
-          color.lerp(_srgb(1, 1, 1), whitenAmount(t));
+          if (tier === "C") {
+            color = tierColor.clone();
+          } else {
+            color = tier === "A" ? timeColor(t) : timeGrayColor(t);
+            color.lerp(_srgb(1, 1, 1), whitenAmount(t));
+          }
           emissiveFactor = Math.pow(t, 2.2);
         } else {
           const backT = (primaryStart - ts) / pastSpan;
           x = -backT * (pastSpan / primarySpan) * this.axisX;
-          color = pastColor(backT);
+          if (tier === "C") {
+            color = tierColor.clone().lerp(DARK_BG, Math.pow(backT, 1.2));
+          } else {
+            color = pastColor(backT);  // grayscale already, fine for A and B
+          }
           emissiveFactor = 0;
         }
         const denom = Math.max(1e-9, Math.abs(s.mean));
@@ -405,8 +472,11 @@ export class Kuutar {
 
         // Change-point markers override the time-based color with a strong
         // red/green and get a permanent 2x scale (applied via mesh.scale, not
-        // geometry, so hover scaling can compose cleanly).
+        // geometry, so hover scaling can compose cleanly). The marker
+        // immediately before the CP also scales up (visual symmetry with
+        // the thicker before-segment) but keeps its own color.
         const isCp = i === cpIdx;
+        const isPreCp = cpIdx > 0 && i === cpIdx - 1;
         const markerColor = isCp ? (cpIsRegression ? CP_REGRESSION : CP_IMPROVEMENT) : color;
         const mat = new THREE.MeshStandardMaterial({
           color: markerColor,
@@ -420,9 +490,10 @@ export class Kuutar {
         });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(x, y, z);
-        const baseScale = isCp ? 2 : 1;
+        const baseScale = (isCp || isPreCp) ? 2 : 1;
         mesh.scale.setScalar(baseScale);
         mesh.userData = {
+          isPoint: true,
           series: k, zi, idx: i,
           series_name, test_name: s.test_name, metric: s.metric,
           unit: s.unit, direction: s.direction,
@@ -440,21 +511,53 @@ export class Kuutar {
       }
 
       if (linePos.length >= 6) {
-        const lineGeo = new LineGeometry();
-        lineGeo.setPositions(linePos);
-        const hex = seriesHexColor(zi);
-        const seriesColor = _srgb(((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255);
-        const lineMat = new LineMaterial({
-          color: seriesColor,
-          linewidth: this._lineBaseWidth,  // pixels (LineMaterial convention)
+        const w = this.container.clientWidth, h = this.container.clientHeight;
+        // Split the line at the change-point index, if any. The "before"
+        // segment is rendered thicker and in the CP color (red for a
+        // regression, green for an improvement) so the direction of the
+        // step reads at a glance. Both segments share the CP vertex so
+        // there's no visible gap.
+        const hasSplit = cpIdx > 0 && cpIdx < s.values.length - 1;
+
+        const mainGeo = new LineGeometry();
+        mainGeo.setPositions(linePos);
+        const mainMat = new LineMaterial({
+          color: tierColor,
+          linewidth: this._lineBaseWidth,
           transparent: true,
           opacity: this._lineBaseOpacity,
           depthWrite: false,
         });
-        lineMat.resolution.set(this.container.clientWidth, this.container.clientHeight);
-        const line = new Line2(lineGeo, lineMat);
-        this.pointsGroup.add(line);
-        this._seriesLines[zi] = line;
+        mainMat.resolution.set(w, h);
+        const mainLine = new Line2(mainGeo, mainMat);
+        mainLine.userData = {
+          baseOpacity: this._lineBaseOpacity,
+          baseWidth: this._lineBaseWidth,
+        };
+        this.pointsGroup.add(mainLine);
+        this._seriesLines[zi] = mainLine;
+
+        if (hasSplit) {
+          // Just the single segment from the point immediately before the
+          // CP to the CP itself — a visual arrow into the step, not a long
+          // trail from the start of history.
+          const beforePos = linePos.slice((cpIdx - 1) * 3, (cpIdx + 1) * 3);
+          const cpCol = cpIsRegression ? CP_REGRESSION : CP_IMPROVEMENT;
+          const beforeMat = new LineMaterial({
+            color: cpCol,
+            linewidth: 2,
+            transparent: true,
+            opacity: 0.45,
+            depthWrite: false,
+          });
+          beforeMat.resolution.set(w, h);
+          const beforeGeo = new LineGeometry();
+          beforeGeo.setPositions(beforePos);
+          const beforeLine = new Line2(beforeGeo, beforeMat);
+          beforeLine.userData = { baseOpacity: 0.45, baseWidth: 2 };
+          this.pointsGroup.add(beforeLine);
+          this._cpBeforeLines[zi] = beforeLine;
+        }
       }
     });
 
@@ -484,7 +587,10 @@ export class Kuutar {
     this._mouseNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this._mouseNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this._raycaster.setFromCamera(this._mouseNdc, this.camera);
-    const meshes = this.pointsGroup.children.filter(c => c.isMesh);
+    // Line2 instances also report isMesh=true, so filter on our explicit
+    // isPoint flag — otherwise a thickened line can get picked and scaled,
+    // which produces visibly shifted geometry (NaN scale × base).
+    const meshes = this.pointsGroup.children.filter(c => c.isMesh && c.userData.isPoint);
     const hits = this._raycaster.intersectObjects(meshes, false);
     const mesh = hits.length > 0 ? hits[0].object : null;
     const zi = mesh ? mesh.userData.zi : -1;
@@ -514,21 +620,27 @@ export class Kuutar {
   }
 
   _applyHoverState() {
-    const HOT = 0.95, WARM = 0.65, DIM = 0.08;
-    const HOT_W = 3.5, WARM_W = 2, DIM_W = 1;
-    for (let i = 0; i < this._seriesLines.length; i++) {
-      const line = this._seriesLines[i];
-      if (!line) continue;
+    const HOT = 0.95, WARM = 0.65, DIM_OP = 0.08;
+    const HOT_W = 3.5, WARM_W = 2;
+    const setTargets = (line, i) => {
+      if (!line) return;
+      const baseOp = line.userData.baseOpacity ?? this._lineBaseOpacity;
+      const baseW  = line.userData.baseWidth   ?? this._lineBaseWidth;
       let op, w;
       if (this._hoveredZi === -1) {
-        op = this._lineBaseOpacity; w = this._lineBaseWidth;
+        op = baseOp; w = baseW;
       } else {
         const d = Math.abs(i - this._hoveredZi);
-        op = d === 0 ? HOT : (d === 1 ? WARM : DIM);
-        w  = d === 0 ? HOT_W : (d === 1 ? WARM_W : DIM_W);
+        if (d === 0)       { op = Math.max(baseOp, HOT);  w = Math.max(baseW, HOT_W); }
+        else if (d === 1)  { op = Math.max(baseOp, WARM); w = Math.max(baseW, WARM_W); }
+        else               { op = Math.min(baseOp, DIM_OP); w = baseW; }
       }
       line.userData._targetOpacity = op;
       line.userData._targetWidth = w;
+    };
+    for (let i = 0; i < this._seriesLines.length; i++) {
+      setTargets(this._seriesLines[i], i);
+      setTargets(this._cpBeforeLines[i], i);
     }
     this.narrator.emit({ type: "hover_changed", zi: this._hoveredZi });
   }
@@ -537,23 +649,22 @@ export class Kuutar {
     // Hover ease: snap *up* to the highlight instantly, but glide *down*
     // over ~2.5s so de-hovered series don't flash off like lightning.
     const FADE_DOWN = 0.02;
-    for (const line of this._seriesLines) {
-      if (!line || line.userData._targetOpacity == null) continue;
+    const easeLine = (line) => {
+      if (!line || line.userData._targetOpacity == null) return;
       const mat = line.material;
       const curOp = mat.opacity;
       const tgtOp = line.userData._targetOpacity;
-      if (tgtOp >= curOp) {
-        mat.opacity = tgtOp;
-      } else if (curOp - tgtOp > 0.001) {
-        mat.opacity = curOp + (tgtOp - curOp) * FADE_DOWN;
-      }
+      if (tgtOp >= curOp) mat.opacity = tgtOp;
+      else if (curOp - tgtOp > 0.001) mat.opacity = curOp + (tgtOp - curOp) * FADE_DOWN;
       const curW = mat.linewidth;
       const tgtW = line.userData._targetWidth;
       if (tgtW != null) {
         if (tgtW >= curW) mat.linewidth = tgtW;
         else if (curW - tgtW > 0.01) mat.linewidth = curW + (tgtW - curW) * FADE_DOWN;
       }
-    }
+    };
+    for (const line of this._seriesLines) easeLine(line);
+    for (const line of this._cpBeforeLines) easeLine(line);
     this.camController.update();
     this.renderer.render(this.scene, this.camera);
     requestAnimationFrame(this._animate);
@@ -566,6 +677,9 @@ export class Kuutar {
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
     for (const line of this._seriesLines) {
+      if (line) line.material.resolution.set(w, h);
+    }
+    for (const line of this._cpBeforeLines) {
       if (line) line.material.resolution.set(w, h);
     }
   }
