@@ -584,17 +584,29 @@ export class Kuutar {
   _onPointerMove(e) {
     if (this._seriesLines.length === 0) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
-    this._mouseNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-    this._mouseNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-    this._raycaster.setFromCamera(this._mouseNdc, this.camera);
-    // Line2 instances also report isMesh=true, so filter on our explicit
-    // isPoint flag — otherwise a thickened line can get picked and scaled,
-    // which produces visibly shifted geometry (NaN scale × base).
-    const meshes = this.pointsGroup.children.filter(c => c.isMesh && c.userData.isPoint);
-    const hits = this._raycaster.intersectObjects(meshes, false);
-    const mesh = hits.length > 0 ? hits[0].object : null;
-    const zi = mesh ? mesh.userData.zi : -1;
-    this._setHoveredMesh(mesh);
+    const mx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    const my = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+
+    // Screen-space nearest-marker pick: project each point to NDC and keep
+    // the closest one within a generous pixel threshold. Much more forgiving
+    // than raycaster hits on small meshes — the cursor doesn't need to be
+    // exactly on top of a point to highlight its series.
+    const THRESHOLD_PX = 40;
+    const thSq = THRESHOLD_PX * THRESHOLD_PX;
+    const halfW = rect.width / 2, halfH = rect.height / 2;
+    const v = this._tmpV || (this._tmpV = new THREE.Vector3());
+    let nearest = null, nearestDSq = thSq;
+    for (const m of this.pointsGroup.children) {
+      if (!m.userData.isPoint) continue;
+      v.copy(m.position).project(this.camera);
+      if (v.z < -1 || v.z > 1) continue;
+      const dx = (v.x - mx) * halfW;
+      const dy = (v.y - my) * halfH;
+      const dSq = dx * dx + dy * dy;
+      if (dSq < nearestDSq) { nearestDSq = dSq; nearest = m; }
+    }
+    const zi = nearest ? nearest.userData.zi : -1;
+    this._setHoveredMesh(nearest);
     this.hoverSeries(zi);
   }
 
@@ -619,7 +631,7 @@ export class Kuutar {
     this.hoverSeries(-1);
   }
 
-  _applyHoverState() {
+  _applyHoverState(neighborsFaded = false) {
     const HOT = 0.95, WARM = 0.65, DIM_OP = 0.08;
     const HOT_W = 3.5, WARM_W = 2;
     const setTargets = (line, i) => {
@@ -631,9 +643,9 @@ export class Kuutar {
         op = baseOp; w = baseW;
       } else {
         const d = Math.abs(i - this._hoveredZi);
-        if (d === 0)       { op = Math.max(baseOp, HOT);  w = Math.max(baseW, HOT_W); }
-        else if (d === 1)  { op = Math.max(baseOp, WARM); w = Math.max(baseW, WARM_W); }
-        else               { op = Math.min(baseOp, DIM_OP); w = baseW; }
+        if (d === 0)                         { op = Math.max(baseOp, HOT);  w = Math.max(baseW, HOT_W); }
+        else if (d === 1 && !neighborsFaded) { op = Math.max(baseOp, WARM); w = Math.max(baseW, WARM_W); }
+        else                                 { op = Math.min(baseOp, DIM_OP); w = baseW; }
       }
       line.userData._targetOpacity = op;
       line.userData._targetWidth = w;
@@ -642,7 +654,21 @@ export class Kuutar {
       setTargets(this._seriesLines[i], i);
       setTargets(this._cpBeforeLines[i], i);
     }
-    this.narrator.emit({ type: "hover_changed", zi: this._hoveredZi });
+    if (!neighborsFaded) this.narrator.emit({ type: "hover_changed", zi: this._hoveredZi });
+
+    // After a few seconds of stable hover, fade the two neighbors down to
+    // DIM so only the hovered series remains highlighted. Any fresh hover
+    // change clears the pending fade and re-shows the neighbors at WARM.
+    if (this._neighborsFadeTimer) {
+      clearTimeout(this._neighborsFadeTimer);
+      this._neighborsFadeTimer = null;
+    }
+    if (this._hoveredZi !== -1 && !neighborsFaded) {
+      this._neighborsFadeTimer = setTimeout(() => {
+        this._neighborsFadeTimer = null;
+        if (this._hoveredZi !== -1) this._applyHoverState(true);
+      }, 3500);
+    }
   }
 
   _animate() {
