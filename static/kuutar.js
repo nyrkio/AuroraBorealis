@@ -3,6 +3,9 @@
 // ordered by variance ascending (low-variance series in front).
 // Shape by metric kind (see shapes.js). Color by timestamp (newest = shiny, oldest = dark).
 import * as THREE from "three";
+import { Line2 } from "three/addons/lines/Line2.js";
+import { LineGeometry } from "three/addons/lines/LineGeometry.js";
+import { LineMaterial } from "three/addons/lines/LineMaterial.js";
 import { geometryFor, unitToKind } from "./shapes.js";
 import { OrbitController } from "./camera.js";
 import { Narrator } from "./narrator.js";
@@ -99,6 +102,29 @@ function seriesKey(run, metric) {
   return `${run.attributes?.test_name || "?"}|${metric.name}`;
 }
 
+function inferDirection(kind) {
+  // Default: lower_is_better (durations, sizes, ratios all want smaller).
+  // Throughput is the notable inversion.
+  return kind === "throughput" ? "higher_is_better" : "lower_is_better";
+}
+
+// Detect the single most prominent step change in a series using a rolling
+// before/after mean delta. Returns {i, score, before, after} or null.
+// `i` is the index of the *first* sample in the "after" window.
+function detectChangePoint(values, W = 7, threshold = 0.15) {
+  if (values.length < W * 2 + 1) return null;
+  let best = { i: -1, score: 0, before: 0, after: 0 };
+  for (let i = W; i < values.length - W; i++) {
+    let before = 0, after = 0;
+    for (let j = 0; j < W; j++) { before += values[i - 1 - j]; after += values[i + j]; }
+    before /= W; after /= W;
+    const baseline = Math.max(Math.abs(before), Math.abs(after), 1e-9);
+    const score = Math.abs(before - after) / baseline;
+    if (score > best.score) best = { i, score, before, after };
+  }
+  return best.score >= threshold ? best : null;
+}
+
 export class Kuutar {
   constructor(container, opts = {}) {
     this.container = container;
@@ -169,6 +195,7 @@ export class Kuutar {
     this._seriesLines = [];   // zi -> Line (populated each render)
     this._hoveredZi = -1;
     this._lineBaseOpacity = 0.10;
+    this._lineBaseWidth = 1;  // pixels
     this._raycaster = new THREE.Raycaster();
     this._mouseNdc = new THREE.Vector2();
     this.renderer.domElement.addEventListener("pointermove", (e) => this._onPointerMove(e));
@@ -251,7 +278,9 @@ export class Kuutar {
     }
     this._seriesLines = [];
     this._seriesInfo = [];
+    this._changePoints = [];
     this._hoveredZi = -1;
+    this._hoveredMesh = null;
     if (!runs || runs.length === 0) return;
 
     // Gather series (test_name, metric_name) -> info.
@@ -264,13 +293,23 @@ export class Kuutar {
             test_name: run.attributes?.test_name || "?",
             metric: m.name,
             unit: m.unit,
+            direction: m.direction || inferDirection(unitToKind(m.unit, m.name)),
             values: [],
             times: [],
+            commits: [],
           });
         }
         const entry = series.get(k);
         entry.values.push(m.value);
-        entry.times.push(new Date(_tsOf(run)).getTime());
+        // Prefer commit (merge) time — a single commit can have many reruns,
+        // but the perf characteristic belongs to the code change. Fall back
+        // to run timestamp only if the v2 commit sub-document is missing.
+        const commit = run.commit || { sha: run.git_commit, short_sha: (run.git_commit || "").slice(0, 7) };
+        const ts = (typeof commit.commit_time === "number")
+          ? commit.commit_time * 1000
+          : new Date(_tsOf(run)).getTime();
+        entry.times.push(ts);
+        entry.commits.push(commit);
       }
     }
 
@@ -300,9 +339,9 @@ export class Kuutar {
       s.variance = variance(s.values.map(v => v / denom));
     }
 
-    // Order series so low-variance sits in front (small Z), high-variance behind.
+    // Order series so low-variance sits in back (small Z), high-variance in front.
     const keys = [...series.keys()].sort(
-      (a, b) => series.get(a).variance - series.get(b).variance,
+      (a, b) => series.get(b).variance - series.get(a).variance,
     );
     const zStep = keys.length > 1 ? this.axisZ / (keys.length - 1) : this.axisZ;
 
@@ -317,69 +356,103 @@ export class Kuutar {
     const tight = Math.min(zStep, xStep);
     const markerSize = Math.max(0.0045, Math.min(0.045, tight * 0.28));
 
+    // Regression/improvement colors for change-point markers.
+    const CP_REGRESSION = _srgb(1.00, 0.32, 0.32);   // light red
+    const CP_IMPROVEMENT = _srgb(0.42, 0.88, 0.48);  // light green
+
     keys.forEach((k, zi) => {
       const s = series.get(k);
       const kind = unitToKind(s.unit, s.metric);
       const geo = geometryFor(kind, markerSize);
+      const series_name = `${s.test_name} · ${s.metric}`;
       this._seriesInfo[zi] = {
-        key: k, zi, name: `${s.test_name} · ${s.metric}`, color: seriesHexColor(zi),
+        key: k, zi, name: series_name, color: seriesHexColor(zi),
       };
-      // Collect positions for the connecting line (string-of-pearls).
-      // Line color is per-series (categorical palette), independent of the
-      // time-based point colors — gives each series a distinct identity thread.
+
+      // Detect the series' most prominent step change up front so each
+      // marker knows whether it is THE change point and whether that
+      // change is a regression or an improvement.
+      const cp = detectChangePoint(s.values);
+      let cpIdx = -1, cpDeltaPct = 0, cpIsRegression = false;
+      if (cp) {
+        cpIdx = cp.i;
+        cpDeltaPct = (cp.after - cp.before) / Math.max(Math.abs(cp.before), 1e-9);
+        // Direction inversion: for lower_is_better, an increase is bad;
+        // for higher_is_better, a decrease is bad.
+        cpIsRegression = (s.direction === "higher_is_better") ? (cpDeltaPct < 0) : (cpDeltaPct > 0);
+        this._changePoints.push({ zi, idx: cpIdx, deltaPct: cpDeltaPct, regression: cpIsRegression });
+      }
+
       const linePos = [];
       for (let i = 0; i < s.values.length; i++) {
         const ts = s.times[i];
-        // X mapping: primary window -> [0, axisX], older data -> negative X.
-        // emissiveFactor ramps up toward now so recent points glow in addition
-        // to catching specular highlights — the "shinier the fresher" effect.
         let x, color, emissiveFactor;
         if (ts >= primaryStart) {
           const t = (ts - primaryStart) / primarySpan;
           x = t * this.axisX;
           color = timeColor(t);
-          // Smooth whitening ramp: zero for newest ~15%, full 0.40 below t=0.65.
           color.lerp(_srgb(1, 1, 1), whitenAmount(t));
-          emissiveFactor = Math.pow(t, 2.2);  // stronger easing — only the newest ~quarter glows
+          emissiveFactor = Math.pow(t, 2.2);
         } else {
-          const backT = (primaryStart - ts) / pastSpan;  // 0 at boundary, 1 at oldest
+          const backT = (primaryStart - ts) / pastSpan;
           x = -backT * (pastSpan / primarySpan) * this.axisX;
           color = pastColor(backT);
-          emissiveFactor = 0;  // past points reflect only, no self-glow
+          emissiveFactor = 0;
         }
-        // Mean-relative Y: center of axis = series mean, displacement scaled by mean.
         const denom = Math.max(1e-9, Math.abs(s.mean));
         const y = this.axisY / 2 + ((s.values[i] - s.mean) / denom) * (Y_GAIN / 2);
         const z = zi * zStep;
+
+        // Change-point markers override the time-based color with a strong
+        // red/green and get a permanent 2x scale (applied via mesh.scale, not
+        // geometry, so hover scaling can compose cleanly).
+        const isCp = i === cpIdx;
+        const markerColor = isCp ? (cpIsRegression ? CP_REGRESSION : CP_IMPROVEMENT) : color;
         const mat = new THREE.MeshStandardMaterial({
-          color,
-          metalness: 0.9,    // chromatic specular highlights
-          roughness: 0.28,   // sharp-ish glints, not mirror-perfect
-          emissive: color,
-          emissiveIntensity: emissiveFactor * 0.75,
-          opacity: 0.75,
+          color: markerColor,
+          metalness: isCp ? 0.5 : 0.9,
+          roughness: isCp ? 0.35 : 0.28,
+          emissive: markerColor,
+          emissiveIntensity: isCp ? 0.7 : emissiveFactor * 0.75,
+          opacity: isCp ? 0.95 : 0.75,
           transparent: true,
           depthWrite: false,
         });
         const mesh = new THREE.Mesh(geo, mat);
         mesh.position.set(x, y, z);
+        const baseScale = isCp ? 2 : 1;
+        mesh.scale.setScalar(baseScale);
         mesh.userData = {
-          series: k, zi, value: s.values[i], timestamp: s.times[i], test_name: s.test_name,
+          series: k, zi, idx: i,
+          series_name, test_name: s.test_name, metric: s.metric,
+          unit: s.unit, direction: s.direction,
+          value: s.values[i], timestamp: s.times[i],
+          commit: s.commits[i],
+          baseScale,
+          isChangePoint: isCp,
+          ...(isCp ? {
+            cpBefore: cp.before, cpAfter: cp.after,
+            cpDeltaPct, regression: cpIsRegression,
+          } : {}),
         };
         this.pointsGroup.add(mesh);
-
         linePos.push(x, y, z);
       }
 
       if (linePos.length >= 6) {
-        const lineGeo = new THREE.BufferGeometry();
-        lineGeo.setAttribute("position", new THREE.Float32BufferAttribute(linePos, 3));
+        const lineGeo = new LineGeometry();
+        lineGeo.setPositions(linePos);
         const hex = seriesHexColor(zi);
         const seriesColor = _srgb(((hex >> 16) & 0xff) / 255, ((hex >> 8) & 0xff) / 255, (hex & 0xff) / 255);
-        const lineMat = new THREE.LineBasicMaterial({
-          color: seriesColor, transparent: true, opacity: this._lineBaseOpacity, depthWrite: false,
+        const lineMat = new LineMaterial({
+          color: seriesColor,
+          linewidth: this._lineBaseWidth,  // pixels (LineMaterial convention)
+          transparent: true,
+          opacity: this._lineBaseOpacity,
+          depthWrite: false,
         });
-        const line = new THREE.Line(lineGeo, lineMat);
+        lineMat.resolution.set(this.container.clientWidth, this.container.clientHeight);
+        const line = new Line2(lineGeo, lineMat);
         this.pointsGroup.add(line);
         this._seriesLines[zi] = line;
       }
@@ -390,6 +463,7 @@ export class Kuutar {
       series_count: keys.length,
       point_count: this.pointsGroup.children.length,
       series: this.getSeries(),
+      change_points: this._changePoints.length,
     });
   }
 
@@ -410,30 +484,51 @@ export class Kuutar {
     this._mouseNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     this._mouseNdc.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
     this._raycaster.setFromCamera(this._mouseNdc, this.camera);
-    // Only hit marker meshes, not lines (easier to target, more forgiving).
     const meshes = this.pointsGroup.children.filter(c => c.isMesh);
     const hits = this._raycaster.intersectObjects(meshes, false);
-    const zi = hits.length > 0 ? hits[0].object.userData.zi : -1;
+    const mesh = hits.length > 0 ? hits[0].object : null;
+    const zi = mesh ? mesh.userData.zi : -1;
+    this._setHoveredMesh(mesh);
     this.hoverSeries(zi);
   }
 
+  _setHoveredMesh(mesh) {
+    if (mesh === this._hoveredMesh) return;
+    // Restore previous.
+    if (this._hoveredMesh) {
+      const prev = this._hoveredMesh;
+      prev.scale.setScalar(prev.userData.baseScale || 1);
+    }
+    this._hoveredMesh = mesh;
+    if (mesh) {
+      // Hover scale: 1.6x on top of base — normal points pop to 1.6x,
+      // change points (base=2) grow to 3.2x. Enough to read at any angle.
+      mesh.scale.setScalar((mesh.userData.baseScale || 1) * 1.6);
+      this.narrator.emit({ type: "point_hovered", point: mesh.userData });
+    }
+  }
+
   _clearHover() {
+    this._setHoveredMesh(null);
     this.hoverSeries(-1);
   }
 
   _applyHoverState() {
-    const HOT = 0.85, WARM = 0.55, DIM = 0.08;
+    const HOT = 0.95, WARM = 0.65, DIM = 0.08;
+    const HOT_W = 3.5, WARM_W = 2, DIM_W = 1;
     for (let i = 0; i < this._seriesLines.length; i++) {
       const line = this._seriesLines[i];
       if (!line) continue;
-      let op;
+      let op, w;
       if (this._hoveredZi === -1) {
-        op = this._lineBaseOpacity;
+        op = this._lineBaseOpacity; w = this._lineBaseWidth;
       } else {
         const d = Math.abs(i - this._hoveredZi);
         op = d === 0 ? HOT : (d === 1 ? WARM : DIM);
+        w  = d === 0 ? HOT_W : (d === 1 ? WARM_W : DIM_W);
       }
       line.userData._targetOpacity = op;
+      line.userData._targetWidth = w;
     }
     this.narrator.emit({ type: "hover_changed", zi: this._hoveredZi });
   }
@@ -444,12 +539,19 @@ export class Kuutar {
     const FADE_DOWN = 0.02;
     for (const line of this._seriesLines) {
       if (!line || line.userData._targetOpacity == null) continue;
-      const cur = line.material.opacity;
-      const tgt = line.userData._targetOpacity;
-      if (tgt >= cur) {
-        line.material.opacity = tgt;
-      } else if (cur - tgt > 0.001) {
-        line.material.opacity = cur + (tgt - cur) * FADE_DOWN;
+      const mat = line.material;
+      const curOp = mat.opacity;
+      const tgtOp = line.userData._targetOpacity;
+      if (tgtOp >= curOp) {
+        mat.opacity = tgtOp;
+      } else if (curOp - tgtOp > 0.001) {
+        mat.opacity = curOp + (tgtOp - curOp) * FADE_DOWN;
+      }
+      const curW = mat.linewidth;
+      const tgtW = line.userData._targetWidth;
+      if (tgtW != null) {
+        if (tgtW >= curW) mat.linewidth = tgtW;
+        else if (curW - tgtW > 0.01) mat.linewidth = curW + (tgtW - curW) * FADE_DOWN;
       }
     }
     this.camController.update();
@@ -463,6 +565,9 @@ export class Kuutar {
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+    for (const line of this._seriesLines) {
+      if (line) line.material.resolution.set(w, h);
+    }
   }
 
   async fetchAndRender(url) {

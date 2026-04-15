@@ -27,7 +27,32 @@
     }
     #series-list li.active { color: var(--series-color, #fff); font-weight: 600; }
     #series-list li.neighbor { color: var(--series-color, #cdd); opacity: 0.75; }
-  </style>
+
+    #commit-panel {
+      position: absolute; right: 0; top: 0; bottom: 0; width: 320px;
+      padding: 16px 18px; box-sizing: border-box;
+      background: linear-gradient(to left, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 100%);
+      color: #cdd; font-size: 12px; z-index: 3;
+      transform: translateX(100%); transition: transform 0.25s ease;
+      overflow-y: auto;
+    }
+    #commit-panel.open { transform: translateX(0); }
+    #commit-panel h3 { margin: 0 0 10px 0; font-size: 11px; font-weight: 600;
+      opacity: 0.7; letter-spacing: 0.05em; text-transform: uppercase; }
+    #commit-panel .sha { font-family: ui-monospace, Menlo, monospace;
+      color: #ffc860; font-size: 13px; }
+    #commit-panel .subject { margin: 8px 0; font-size: 14px; color: #fff; }
+    #commit-panel .meta { opacity: 0.7; margin: 4px 0; }
+    #commit-panel .delta { margin-top: 14px; padding-top: 10px;
+      border-top: 1px solid rgba(255,255,255,0.1); }
+    #commit-panel .delta .big { font-size: 18px; color: #ffc860; }
+    #commit-panel .delta .big.down { color: #ff6b6b; }
+    #commit-panel .close { position: absolute; top: 8px; right: 12px;
+      cursor: pointer; opacity: 0.5; font-size: 16px; }
+    #commit-panel .close:hover { opacity: 1; }
+    #cp-hint { position: absolute; bottom: 8px; right: 8px;
+      font-size: 11px; color: #cdd; opacity: 0.5; z-index: 2; }
+</style>
   <script type="importmap">
   {
     "imports": {
@@ -45,6 +70,9 @@
     <div class="shape-row"><span class="swatch">■</span> size (bytes)</div>
     <div class="shape-row"><span class="swatch">▬</span> ratio (%)</div>
     <div class="shape-row"><span class="swatch">◆</span> count</div>
+    <div style="margin-top:8px; opacity:0.6; font-size:11px; line-height:1.5;">
+      drag to rotate · right-drag to pan · scroll to zoom
+    </div>
     <div id="status" style="margin-top:6px; opacity:0.7;"></div>
   </div>
 
@@ -54,6 +82,13 @@
   </div>
 
   <div id="graph"></div>
+
+  <div id="commit-panel">
+    <span class="close" id="cp-close">✕</span>
+    <div id="cp-body"></div>
+  </div>
+
+  <div id="cp-hint">hover any point for commit details · red = regression, green = improvement</div>
 
   <script type="module">
     import { Kuutar } from "./kuutar.js";
@@ -81,10 +116,54 @@
       }
     }
 
+    const panel = document.getElementById("commit-panel");
+    const panelBody = document.getElementById("cp-body");
+    document.getElementById("cp-close").addEventListener("click", () => panel.classList.remove("open"));
+
+    function fmtNum(x) {
+      if (Math.abs(x) >= 1000) return x.toFixed(0);
+      if (Math.abs(x) >= 10) return x.toFixed(1);
+      return x.toFixed(3);
+    }
+    function fmtDate(ms) {
+      return new Date(ms).toISOString().slice(0, 10);
+    }
+    function commitDate(c, fallbackMs) {
+      if (c && typeof c.commit_time === "number") return fmtDate(c.commit_time * 1000);
+      return fmtDate(fallbackMs);
+    }
+    function showPoint(p) {
+      const c = p.commit || {};
+      let deltaBlock = "";
+      if (p.isChangePoint) {
+        const pct = p.cpDeltaPct * 100;
+        const sign = pct >= 0 ? "+" : "";
+        const label = p.regression ? "regression" : "improvement";
+        const klass = p.regression ? "down" : "";
+        deltaBlock = `
+          <div class="delta">
+            <div class="meta">${label} · ${p.direction || ""}</div>
+            <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
+            <div class="meta">${fmtNum(p.cpBefore)} → ${fmtNum(p.cpAfter)} ${p.unit || ""}</div>
+          </div>`;
+      }
+      panelBody.innerHTML = `
+        <div class="sha">${c.short_sha || (c.sha || "").slice(0,7)}</div>
+        <div class="subject">${c.message || "(no message)"}</div>
+        <div class="meta">${c.author || "?"} · ${commitDate(c, p.timestamp)}${c.ref ? " · " + c.ref : ""}${c.repo ? " · " + c.repo : ""}</div>
+        <div class="meta">series: <span style="color:#fff">${p.series_name}</span></div>
+        <div class="meta">value: <span style="color:#fff">${fmtNum(p.value)} ${p.unit || ""}</span></div>
+        ${deltaBlock}
+      `;
+      panel.classList.add("open");
+    }
+
     k.narrator.subscribe(e => {
       if (e.type === "render_complete") {
-        status.textContent = `${e.point_count} points across ${e.series_count} series`;
+        status.textContent = `${e.point_count} points across ${e.series_count} series · ${e.change_points} change points`;
         buildLegend(e.series);
+      } else if (e.type === "point_hovered") {
+        showPoint(e.point);
       } else if (e.type === "hover_changed") {
         for (let i = 0; i < items.length; i++) {
           const li = items[i];

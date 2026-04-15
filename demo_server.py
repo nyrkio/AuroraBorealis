@@ -5,12 +5,72 @@ mount kuutar's static/ at /, run under uvicorn.
     # open http://localhost:8000/
 """
 import datetime
+import hashlib
 import math
 import os
 import random
 import sys
 
 from nyrkiov3_v0.app import build_app
+
+
+AUTHORS = [
+    "Anna Virtanen", "Ben Lindqvist", "Charlie Park", "Dana Okafor",
+    "Erik Saari", "Fiona O'Neill", "Gabe Rivera",
+]
+
+NORMAL_VERBS = [
+    "tidy", "update docs for", "rename", "adjust", "inline",
+    "simplify", "reorder", "dedupe", "guard", "annotate",
+    "lint", "format",
+]
+
+IMPACT_VERBS = [
+    "refactor", "rewrite", "switch", "optimize", "port", "replace",
+    "vectorize", "cache", "reindex", "parallelize", "batch", "prune",
+]
+
+HOTFIX_VERBS = ["hotfix", "revert", "disable", "roll back", "patch"]
+
+SUBJECTS = [
+    "the parser", "metric aggregation", "the bench harness",
+    "the startup path", "retry loop", "timeout logic",
+    "config loader", "the result cache", "connection pool",
+    "serialization", "logging layer", "the ingest path",
+    "scheduler", "the event bus", "worker dispatch",
+    "the state machine", "request routing", "db adapter",
+    "auth middleware", "cursor handling",
+]
+
+
+def _make_commits(rng, n_days, start_date, change_days, outlier_days, repo):
+    """One commit per day, shaped to benchzoo v2 `commit` sub-document
+    (repo, sha, ref, commit_time) extended with message/author/short_sha.
+
+    Impact verbs on change-point days, hotfix on outlier days, boring
+    tidy/rename commits everywhere else."""
+    commits = []
+    for d in range(n_days):
+        ts = start_date + datetime.timedelta(days=d)
+        if d in outlier_days:
+            verb = rng.choice(HOTFIX_VERBS)
+        elif d in change_days:
+            verb = rng.choice(IMPACT_VERBS)
+        else:
+            verb = rng.choice(NORMAL_VERBS)
+        message = f"{verb} {rng.choice(SUBJECTS)}"
+        author = rng.choice(AUTHORS)
+        sha = hashlib.sha1(f"{d}|{message}|{author}".encode()).hexdigest()
+        commits.append({
+            "repo": repo,
+            "sha": sha,
+            "ref": "main",
+            "commit_time": int(ts.timestamp()),
+            "short_sha": sha[:7],
+            "author": author,
+            "message": message,
+        })
+    return commits
 
 
 def _seed_demo(app):
@@ -36,59 +96,72 @@ def _seed_demo(app):
 
     # Variety of metric kinds so the shape vocabulary is well-represented.
     FAMILIES = [
-        ("latency",       "ms",    lambda: rng.uniform(10, 200)),
-        ("throughput",    "ops/s", lambda: rng.uniform(1_000, 50_000)),
-        ("artifact_size", "MB",    lambda: rng.uniform(5, 150)),
-        ("error_rate",    "%",     lambda: rng.uniform(0.1, 5.0)),
-        ("requests",      "count", lambda: rng.uniform(100, 5000)),
+        ("latency",       "ms",    "lower_is_better",  lambda: rng.uniform(10, 200)),
+        ("throughput",    "ops/s", "higher_is_better", lambda: rng.uniform(1_000, 50_000)),
+        ("artifact_size", "MB",    "lower_is_better",  lambda: rng.uniform(5, 150)),
+        ("error_rate",    "%",     "lower_is_better",  lambda: rng.uniform(0.1, 5.0)),
+        ("requests",      "count", "higher_is_better", lambda: rng.uniform(100, 5000)),
     ]
 
-    def insert_series(test_name, metric_name, unit, baseline, noise_pct,
-                      step_day=None, step_mult=1.0, outlier_day=None, outlier_mult=1.0):
-        for d in range(DAYS):
-            ts = start + datetime.timedelta(days=d)
-            level = baseline * (step_mult if step_day is not None and d >= step_day else 1.0)
-            val = level + rng.gauss(0, level * noise_pct)
-            if d == outlier_day:
-                val = baseline * outlier_mult if outlier_mult > 0 else baseline * 0.01
-            runs.insert_one(Document(
-                absolute_name="gh/demo/bench",
-                branch="main",
-                git_commit=f"c{d:04d}",
-                timestamp=ts,
-                attributes={"test_name": test_name},
-                metrics=[{"name": metric_name, "unit": unit, "value": val}],
-                passed=True,
-            ))
-
+    # Pre-plan change/outlier days across all series so we can colour the
+    # daily commits accordingly.
     N_SERIES = 40
+    plans = []
+    change_days = set()
+    outlier_days = set()
     for i in range(N_SERIES):
-        metric, unit, baseline_fn = FAMILIES[i % len(FAMILIES)]
+        metric, unit, direction, baseline_fn = FAMILIES[i % len(FAMILIES)]
         baseline = baseline_fn()
-        # Noise scales from very tight (0.5%) to quite scattered (20%) across the 40 series.
         noise_pct = 0.005 + (i / max(1, N_SERIES - 1)) * 0.195
-
-        # ~30% chance of a step-function change point.
         step_day = step_mult = None
         if rng.random() < 0.30:
             step_day = rng.randint(30, DAYS - 15)
-            # ±15–40% step
-            direction = rng.choice([-1, 1])
-            step_mult = 1.0 + direction * rng.uniform(0.15, 0.40)
-
-        # ~20% chance of a singular outlier (drop to near-zero or 2x/3x).
+            sign = rng.choice([-1, 1])
+            step_mult = 1.0 + sign * rng.uniform(0.15, 0.40)
+            change_days.add(step_day)
         outlier_day = outlier_mult = None
         if rng.random() < 0.20:
             outlier_day = rng.randint(0, DAYS - 1)
             outlier_mult = rng.choice([0.0, 2.0, 3.0])
+            outlier_days.add(outlier_day)
+        plans.append({
+            "test_name": f"bench_{i:02d}",
+            "metric": metric, "unit": unit, "direction": direction, "baseline": baseline,
+            "noise_pct": noise_pct,
+            "step_day": step_day, "step_mult": step_mult if step_day is not None else 1.0,
+            "outlier_day": outlier_day, "outlier_mult": outlier_mult if outlier_day is not None else 1.0,
+        })
 
-        insert_series(
-            test_name=f"bench_{i:02d}",
-            metric_name=metric, unit=unit, baseline=baseline,
-            noise_pct=noise_pct,
-            step_day=step_day, step_mult=step_mult if step_day is not None else 1.0,
-            outlier_day=outlier_day, outlier_mult=outlier_mult if outlier_day is not None else 1.0,
-        )
+    commits = _make_commits(rng, DAYS, start, change_days, outlier_days, repo="demo/bench")
+
+    def insert_series(plan):
+        baseline = plan["baseline"]
+        step_day, step_mult = plan["step_day"], plan["step_mult"]
+        outlier_day, outlier_mult = plan["outlier_day"], plan["outlier_mult"]
+        for d in range(DAYS):
+            ts = start + datetime.timedelta(days=d)
+            level = baseline * (step_mult if step_day is not None and d >= step_day else 1.0)
+            val = level + rng.gauss(0, level * plan["noise_pct"])
+            if d == outlier_day:
+                val = baseline * outlier_mult if outlier_mult > 0 else baseline * 0.01
+            commit = commits[d]
+            # v2-style `commit` sub-document at top level. The legacy v1
+            # fields (`git_commit`, `branch`) are still present because
+            # the rest of the stack hasn't migrated yet.
+            runs.insert_one(Document(
+                absolute_name="gh/demo/bench",
+                branch="main",
+                git_commit=commit["sha"],
+                timestamp=ts,
+                attributes={"test_name": plan["test_name"]},
+                metrics=[{"name": plan["metric"], "unit": plan["unit"],
+                          "direction": plan["direction"], "value": val}],
+                commit=commit,
+                passed=True,
+            ))
+
+    for plan in plans:
+        insert_series(plan)
 
 
 def main():
