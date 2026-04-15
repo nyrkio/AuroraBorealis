@@ -514,16 +514,27 @@ export class Kuutar {
     );
     const zStep = keys.length > 1 ? this.axisZ / (keys.length - 1) : this.axisZ;
 
-    // Marker size adapts to density: it keys off the TIGHTER of the Z-spacing
-    // (series neighbors) and the X-spacing (time neighbors), so sparse data
-    // gets bigger markers and dense data shrinks. The multiplier 0.1875 gives
-    // ~50% gap between touching neighbors, further reduced by 25%.
-    const maxPointsPerSeries = Math.max(
-      1, ...[...series.values()].map(s => s.values.length),
-    );
-    const xStep = this.axisX / Math.max(1, maxPointsPerSeries - 1);
-    const tight = Math.min(zStep, xStep);
-    const markerSize = Math.max(0.0045, Math.min(0.045, tight * 0.28));
+    // Marker size keys off Z-spacing alone now — X spacing is bounded
+    // independently (see xStep below) so markers won't overlap along X.
+    const markerSize = Math.max(0.0045, Math.min(0.045, zStep * 0.28));
+
+    // X mapping is ordinal, not proportional to wall-clock time. Build
+    // the globally-sorted list of distinct commit times; each commit
+    // gets an index. Spacing between consecutive commits is bounded
+    // above at 10 × markerSize so a handful of commits sit close rather
+    // than stretched across the whole axis; dense data (many commits)
+    // uses natural axisX / (N-1) spacing and fills the axis. Newest
+    // commit always anchors at x = axisX.
+    const allTimesSet = new Set();
+    for (const run of runs) allTimesSet.add(new Date(_tsOf(run)).getTime());
+    const commitTimes = [...allTimesSet].sort((a, b) => a - b);
+    const nCommits = commitTimes.length;
+    const naturalXStep = nCommits > 1 ? this.axisX / (nCommits - 1) : 0;
+    const xStep = Math.min(naturalXStep, markerSize * 10);
+    const xByTs = new Map(commitTimes.map(
+      (t, i) => [t, this.axisX - (nCommits - 1 - i) * xStep]
+    ));
+    const globalIdxByTs = new Map(commitTimes.map((t, i) => [t, i]));
 
     // Regression/improvement colors for change-point markers.
     const CP_REGRESSION = _srgb(1.00, 0.32, 0.32);   // light red
@@ -552,25 +563,24 @@ export class Kuutar {
       const cp = detectChangePoint(s.values, _W);
       let cpIdx = -1, cpDeltaPct = 0, cpIsRegression = false, cpEntry = null;
       if (cp) {
-        cpIdx = cp.i;
+        cpIdx = cp.i;  // series-local index into s.values / s.times
         cpDeltaPct = (cp.after - cp.before) / Math.max(Math.abs(cp.before), 1e-9);
-        // Direction inversion: for lower_is_better, an increase is bad;
-        // for higher_is_better, a decrease is bad.
         cpIsRegression = (s.direction === "higher_is_better") ? (cpDeltaPct < 0) : (cpDeltaPct > 0);
-        cpEntry = { zi, idx: cpIdx, deltaPct: cpDeltaPct, regression: cpIsRegression, mesh: null };
+        // Flyover groups by commit (globalIdx), so store that as `idx`.
+        const cpGlobalIdx = globalIdxByTs.get(s.times[cpIdx]);
+        cpEntry = { zi, idx: cpGlobalIdx, deltaPct: cpDeltaPct, regression: cpIsRegression, mesh: null };
         this._changePoints.push(cpEntry);
       }
 
       const linePos = [];
       for (let i = 0; i < s.values.length; i++) {
         const ts = s.times[i];
-        // Marker color by tier. A/B use a time-based gradient (color/gray);
-        // C holds the palette color steady. All tiers fade toward dark in
-        // the past so depth/age still reads.
-        let x, color, emissiveFactor;
+        const x = xByTs.get(ts);
+        // Coloring still follows wall-clock time: primary-window points
+        // get the bright gradient, past points fade into grayscale.
+        let color, emissiveFactor;
         if (ts >= primaryStart) {
           const t = (ts - primaryStart) / primarySpan;
-          x = t * this.axisX;
           if (tier === "C") {
             color = tierColor.clone();
           } else {
@@ -580,11 +590,10 @@ export class Kuutar {
           emissiveFactor = Math.pow(t, 2.2);
         } else {
           const backT = (primaryStart - ts) / pastSpan;
-          x = -backT * (pastSpan / primarySpan) * this.axisX;
           if (tier === "C") {
             color = tierColor.clone().lerp(DARK_BG, Math.pow(backT, 1.2));
           } else {
-            color = pastColor(backT);  // grayscale already, fine for A and B
+            color = pastColor(backT);
           }
           emissiveFactor = 0;
         }
@@ -622,9 +631,10 @@ export class Kuutar {
         mesh.position.set(x, y, z);
         const baseScale = (isCp || isPreCp) ? 2 : 1;
         mesh.scale.setScalar(baseScale);
+        const globalIdx = globalIdxByTs.get(ts);
         mesh.userData = {
           isPoint: true,
-          series: k, zi, idx: i,
+          series: k, zi, idx: globalIdx, localIdx: i,
           series_name, test_name: s.test_name, metric: s.metric,
           unit: s.unit, direction: s.direction,
           value: s.values[i], timestamp: s.times[i],
@@ -639,10 +649,10 @@ export class Kuutar {
         };
         this.pointsGroup.add(mesh);
         if (isCp && cpEntry) cpEntry.mesh = mesh;
-        // Column index: meshes with the same `i` share a time/commit; used
-        // by the time-cursor highlight to snap them all to full opacity.
-        if (!this._byIdx.has(i)) this._byIdx.set(i, []);
-        this._byIdx.get(i).push(mesh);
+        // Column index: meshes sharing a commit timestamp (same globalIdx)
+        // are the "column" the time-cursor plane highlights.
+        if (!this._byIdx.has(globalIdx)) this._byIdx.set(globalIdx, []);
+        this._byIdx.get(globalIdx).push(mesh);
         linePos.push(x, y, z);
       }
 
