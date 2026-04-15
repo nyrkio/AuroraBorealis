@@ -256,7 +256,16 @@ export class Kuutar {
     this._cursorPlane.position.set(0, this.axisY / 2, this.axisZ / 2);
     this._cursorPlane.visible = false;
     this.scene.add(this._cursorPlane);
+    // Second plane that stays in place when a commit is locked.
+    const lockedMat = cursorMat.clone();
+    lockedMat.opacity = 0.025;
+    this._lockedPlane = new THREE.Mesh(cursorGeo, lockedMat);
+    this._lockedPlane.position.copy(this._cursorPlane.position);
+    this._lockedPlane.visible = false;
+    this.scene.add(this._lockedPlane);
     this._columnMeshes = null;
+    this._lockedColumn = null;
+    this._locked = null;   // { mesh, zi, idx, x }
     this._byIdx = new Map();
 
     // Hover/picking state.
@@ -269,6 +278,21 @@ export class Kuutar {
     this._mouseNdc = new THREE.Vector2();
     this.renderer.domElement.addEventListener("pointermove", (e) => this._onPointerMove(e));
     this.renderer.domElement.addEventListener("pointerleave", () => this._clearHover());
+    // Drag detection: if pointerup is within a few pixels of pointerdown,
+    // treat as a click; otherwise it was a rotate/pan and we exit any lock.
+    this.renderer.domElement.addEventListener("pointerdown", (e) => {
+      this._pressStart = { x: e.clientX, y: e.clientY, button: e.button };
+    });
+    this.renderer.domElement.addEventListener("pointerup", (e) => {
+      const s = this._pressStart;
+      this._pressStart = null;
+      if (!s) return;
+      // A drag (moved > a few pixels) is a rotate/pan — don't treat it as
+      // a click. Camera movement never affects lock state.
+      const moved = Math.hypot(e.clientX - s.x, e.clientY - s.y);
+      if (moved > 4) return;
+      if (s.button === 0) this._onPointerClick();
+    });
 
     // Resize handling.
     window.addEventListener("resize", () => this._onResize());
@@ -352,8 +376,11 @@ export class Kuutar {
     this._hoveredZi = -1;
     this._hoveredMesh = null;
     this._columnMeshes = null;
+    this._lockedColumn = null;
+    this._locked = null;
     this._byIdx = new Map();
     if (this._cursorPlane) this._cursorPlane.visible = false;
+    if (this._lockedPlane) this._lockedPlane.visible = false;
     if (!runs || runs.length === 0) return;
 
     // Gather series (test_name, metric_name) -> info.
@@ -522,6 +549,7 @@ export class Kuutar {
           value: s.values[i], timestamp: s.times[i],
           commit: s.commits[i],
           baseScale,
+          _baseOpacity: mat.opacity,
           isChangePoint: isCp,
           ...(isCp ? {
             cpBefore: cp.before, cpAfter: cp.after,
@@ -609,6 +637,8 @@ export class Kuutar {
 
   _onPointerMove(e) {
     if (this._seriesLines.length === 0) return;
+    // Don't re-pick hover while a rotate/pan drag is in progress.
+    if (this._pressStart) return;
     const rect = this.renderer.domElement.getBoundingClientRect();
     const mx = ((e.clientX - rect.left) / rect.width) * 2 - 1;
     const my = -((e.clientY - rect.top) / rect.height) * 2 + 1;
@@ -631,6 +661,15 @@ export class Kuutar {
       const dSq = dx * dx + dy * dy;
       if (dSq < nearestDSq) { nearestDSq = dSq; nearest = m; }
     }
+    // In locked mode, ignore any point that's not on the locked cross
+    // (same series zi, or same time idx). Off-cross hovers keep the lock
+    // state visible and don't update anything.
+    if (this._locked && nearest) {
+      const ud = nearest.userData;
+      if (ud.zi !== this._locked.zi && ud.idx !== this._locked.idx) {
+        nearest = null;
+      }
+    }
     const zi = nearest ? nearest.userData.zi : -1;
     this._setHoveredMesh(nearest);
     this.hoverSeries(zi);
@@ -638,44 +677,111 @@ export class Kuutar {
 
   _setHoveredMesh(mesh) {
     if (mesh === this._hoveredMesh) return;
-    // Restore previous.
-    if (this._hoveredMesh) {
-      const prev = this._hoveredMesh;
-      prev.scale.setScalar(prev.userData.baseScale || 1);
-    }
+    const prev = this._hoveredMesh;
     this._hoveredMesh = mesh;
     this._updateTimeCursor(mesh);
-    if (mesh) {
-      // Hover scale wins over column scale if it's bigger (CP markers:
-      // 3.2). For normal points both land at 2×, matching the column.
-      const base = mesh.userData.baseScale || 1;
-      mesh.scale.setScalar(Math.max(base * 1.6, 4));
+    if (prev && prev !== mesh) this._applyMeshState(prev);
+    if (mesh) this._applyMeshState(mesh);
+    // Info-box rule: normally follow hover; in locked mode follow hover
+    // while on a highlighted series (on-cross), and fall back to the
+    // locked point when off-cross (mesh === null).
+    if (this._locked) {
+      const source = mesh || this._locked.mesh;
+      this.narrator.emit({ type: "point_hovered", point: source.userData });
+    } else if (mesh) {
       this.narrator.emit({ type: "point_hovered", point: mesh.userData });
     }
   }
 
   _updateTimeCursor(mesh) {
-    // Restore opacity + scale on the previously highlighted column.
-    if (this._columnMeshes) {
-      for (const m of this._columnMeshes) {
-        if (m.userData._baseOpacity != null) m.material.opacity = m.userData._baseOpacity;
-        m.scale.setScalar(m.userData.baseScale || 1);
-      }
-      this._columnMeshes = null;
-    }
-    if (!mesh) {
+    const newCol = mesh ? (this._byIdx.get(mesh.userData.idx) || []) : [];
+    const oldCol = this._columnMeshes || [];
+    const newSet = new Set(newCol);
+    this._columnMeshes = newCol;
+    // Re-apply state on old members that left the hover column.
+    for (const m of oldCol) if (!newSet.has(m)) this._applyMeshState(m);
+    if (mesh) {
+      this._cursorPlane.position.x = mesh.position.x;
+      this._cursorPlane.visible = true;
+    } else {
       this._cursorPlane.visible = false;
+    }
+    for (const m of newCol) this._applyMeshState(m);
+  }
+
+  // Central authority for each point mesh's visual state. Considers lock
+  // column, hover column, and hovered-mesh emphasis; picks the strongest.
+  _applyMeshState(m) {
+    const inLocked = this._lockedColumn ? this._lockedColumn.includes(m) : false;
+    const inHover  = this._columnMeshes ? this._columnMeshes.includes(m) : false;
+    const isHot    = m === this._hoveredMesh;
+    const base = m.userData.baseScale || 1;
+    let scale = base;
+    let opacity = m.userData._baseOpacity;
+    if (inLocked || inHover) {
+      opacity = 1.0;
+      // Change points on the time-cursor plane pop larger than their
+      // neighbors — 6× vs the 4× of normal column points.
+      scale = m.userData.isChangePoint ? 6 : Math.max(scale, 4);
+    }
+    if (isHot) {
+      // Hover always adds emphasis. In a column, add a bonus on top of
+      // the column scale — larger for change points so they pop clearly
+      // when hovered on the plane. Off-column, the original base × 1.6.
+      if (inLocked || inHover) {
+        scale += m.userData.isChangePoint ? 3 : 1;
+      } else {
+        scale = Math.max(scale, base * 1.6);
+      }
+    }
+    m.material.opacity = opacity;
+    m.scale.setScalar(scale);
+  }
+
+  _onPointerClick() {
+    const mesh = this._hoveredMesh;
+    if (!this._locked) {
+      if (mesh) this._enterLock(mesh);
       return;
     }
-    this._cursorPlane.position.x = mesh.position.x;
-    this._cursorPlane.visible = true;
-    const col = this._byIdx.get(mesh.userData.idx) || [];
-    for (const m of col) {
-      if (m.userData._baseOpacity == null) m.userData._baseOpacity = m.material.opacity;
-      m.material.opacity = 1.0;
-      m.scale.setScalar(Math.max(m.userData.baseScale || 1, 4));
+    // In locked mode: clicking a cross point replaces the lock; clicking
+    // off-cross (no hover, or hover off the cross) exits the lock.
+    if (mesh && (mesh.userData.zi === this._locked.zi || mesh.userData.idx === this._locked.idx)) {
+      this._enterLock(mesh);
+    } else {
+      this._exitLock();
     }
-    this._columnMeshes = col;
+  }
+
+  _enterLock(mesh) {
+    const wasLocked = !!this._locked;
+    // Tear down any existing lock's column state without a re-apply pass
+    // (the new lock will cover it).
+    if (wasLocked) {
+      const old = this._lockedColumn || [];
+      this._lockedColumn = null;
+      this._locked = null;
+      for (const m of old) this._applyMeshState(m);
+    }
+    this._locked = { mesh, zi: mesh.userData.zi, idx: mesh.userData.idx, x: mesh.position.x };
+    this._lockedPlane.position.x = mesh.position.x;
+    this._lockedPlane.visible = true;
+    this._lockedColumn = this._byIdx.get(mesh.userData.idx) || [];
+    for (const m of this._lockedColumn) this._applyMeshState(m);
+    // Locked series must read as HOT regardless of current hover.
+    this._applyHoverState();
+    // Pin the info box to the clicked point.
+    this.narrator.emit({ type: "point_hovered", point: mesh.userData });
+  }
+
+  _exitLock() {
+    if (!this._locked) return;
+    this._lockedPlane.visible = false;
+    const old = this._lockedColumn || [];
+    this._locked = null;
+    this._lockedColumn = null;
+    for (const m of old) this._applyMeshState(m);
+    this._applyHoverState();
   }
 
   _clearHover() {
@@ -686,16 +792,23 @@ export class Kuutar {
   _applyHoverState(neighborsFaded = false) {
     const HOT = 0.95, WARM = 0.65, DIM_OP = 0.08;
     const HOT_W = 3.5, WARM_W = 2;
+    const lockedZi = this._locked ? this._locked.zi : -1;
+    // In locked mode: no WARM neighbors at all — only the locked line and
+    // (if distinct) the currently-hovered line read as HOT. Everything
+    // else is DIM, immediately.
+    if (this._locked) neighborsFaded = true;
     const setTargets = (line, i) => {
       if (!line) return;
       const baseOp = line.userData.baseOpacity ?? this._lineBaseOpacity;
       const baseW  = line.userData.baseWidth   ?? this._lineBaseWidth;
       let op, w;
+      const isLocked = i === lockedZi;
       if (this._hoveredZi === -1) {
-        op = baseOp; w = baseW;
+        if (isLocked) { op = Math.max(baseOp, HOT); w = Math.max(baseW, HOT_W); }
+        else          { op = baseOp; w = baseW; }
       } else {
         const d = Math.abs(i - this._hoveredZi);
-        if (d === 0)                         { op = Math.max(baseOp, HOT);  w = Math.max(baseW, HOT_W); }
+        if (d === 0 || isLocked)             { op = Math.max(baseOp, HOT);  w = Math.max(baseW, HOT_W); }
         else if (d === 1 && !neighborsFaded) { op = Math.max(baseOp, WARM); w = Math.max(baseW, WARM_W); }
         else                                 { op = Math.min(baseOp, DIM_OP); w = baseW; }
       }
@@ -719,26 +832,30 @@ export class Kuutar {
       this._neighborsFadeTimer = setTimeout(() => {
         this._neighborsFadeTimer = null;
         if (this._hoveredZi !== -1) this._applyHoverState(true);
-      }, 3500);
+      }, 200);
     }
   }
 
   _animate() {
     // Hover ease: snap *up* to the highlight instantly, but glide *down*
     // over ~2.5s so de-hovered series don't flash off like lightning.
-    const FADE_DOWN = 0.02;
+    // Linear fade so the tail drops to target instead of lingering
+    // asymptotically. In locked mode, snap — decisive feel.
+    const snap = !!this._locked;
+    const OP_STEP = 0.045;
+    const W_STEP  = 0.18;
     const easeLine = (line) => {
       if (!line || line.userData._targetOpacity == null) return;
       const mat = line.material;
       const curOp = mat.opacity;
       const tgtOp = line.userData._targetOpacity;
-      if (tgtOp >= curOp) mat.opacity = tgtOp;
-      else if (curOp - tgtOp > 0.001) mat.opacity = curOp + (tgtOp - curOp) * FADE_DOWN;
+      if (tgtOp >= curOp || snap) mat.opacity = tgtOp;
+      else mat.opacity = Math.max(tgtOp, curOp - OP_STEP);
       const curW = mat.linewidth;
       const tgtW = line.userData._targetWidth;
       if (tgtW != null) {
-        if (tgtW >= curW) mat.linewidth = tgtW;
-        else if (curW - tgtW > 0.01) mat.linewidth = curW + (tgtW - curW) * FADE_DOWN;
+        if (tgtW >= curW || snap) mat.linewidth = tgtW;
+        else mat.linewidth = Math.max(tgtW, curW - W_STEP);
       }
     };
     for (const line of this._seriesLines) easeLine(line);
