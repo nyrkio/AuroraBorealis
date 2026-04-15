@@ -54,6 +54,27 @@
     #commit-panel .close:hover { opacity: 1; }
     #cp-hint { position: absolute; bottom: 8px; right: 8px;
       font-size: 11px; color: #cdd; opacity: 0.5; z-index: 2; }
+
+    #flyover {
+      position: absolute; bottom: 14px; left: 50%;
+      transform: translateX(-50%); z-index: 4;
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 14px;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 24px;
+      color: #cdd; font-size: 12px;
+      backdrop-filter: blur(4px);
+    }
+    #flyover button {
+      background: none; border: none; color: #cdd; cursor: pointer;
+      font-size: 16px; padding: 2px 6px; border-radius: 4px;
+      line-height: 1;
+    }
+    #flyover button:hover { background: rgba(255,255,255,0.08); color: #fff; }
+    #flyover button:disabled { opacity: 0.3; cursor: default; }
+    #fly-counter { opacity: 0.7; min-width: 60px; text-align: center; }
+    #fly-status { opacity: 0.7; font-style: italic; min-width: 110px; }
 </style>
   <script type="importmap">
   {
@@ -91,6 +112,14 @@
   </div>
 
   <div id="cp-hint">hover any point for commit details · red = regression, green = improvement</div>
+
+  <div id="flyover">
+    <button id="fly-prev" title="previous change point">⏮</button>
+    <button id="fly-play" title="play / pause">▶</button>
+    <button id="fly-next" title="next change point">⏭</button>
+    <span id="fly-counter">–</span>
+    <span id="fly-status"></span>
+  </div>
 
   <script type="module">
     import { Kuutar } from "./kuutar.js";
@@ -135,38 +164,104 @@
       if (c && typeof c.commit_time === "number") return fmtDate(c.commit_time * 1000);
       return fmtDate(fallbackMs);
     }
-    function showPoint(p) {
+    function showPoint(p, siblings) {
       const c = p.commit || {};
-      let deltaBlock = "";
-      if (p.isChangePoint) {
-        const pct = p.cpDeltaPct * 100;
-        const sign = pct >= 0 ? "+" : "";
-        const label = p.regression ? "regression" : "improvement";
-        const klass = p.regression ? "down" : "";
-        deltaBlock = `
-          <div class="delta">
-            <div class="meta">${label} · ${p.direction || ""}</div>
-            <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
-            <div class="meta">${fmtNum(p.cpBefore)} → ${fmtNum(p.cpAfter)} ${p.unit || ""}</div>
-          </div>`;
-      }
-      panelBody.innerHTML = `
+      const header = `
         <div class="sha">${c.short_sha || (c.sha || "").slice(0,7)}</div>
         <div class="subject">${c.message || "(no message)"}</div>
         <div class="meta">${c.author || "?"} · ${commitDate(c, p.timestamp)}${c.ref ? " · " + c.ref : ""}${c.repo ? " · " + c.repo : ""}</div>
-        <div class="meta">series: <span style="color:#fff">${p.series_name}</span></div>
-        <div class="meta">value: <span style="color:#fff">${fmtNum(p.value)} ${p.unit || ""}</span></div>
-        ${deltaBlock}
       `;
+      let body;
+      if (siblings && siblings.length > 0) {
+        // Multiple change points landed on this commit — list all,
+        // largest first. The visual highlight is on siblings[0].
+        const count = siblings.length;
+        const items = siblings.map(s => {
+          const u = s.mesh.userData;
+          const pct = u.cpDeltaPct * 100;
+          const sign = pct >= 0 ? "+" : "";
+          const klass = u.regression ? "down" : "";
+          const label = u.regression ? "regression" : "improvement";
+          return `
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid rgba(255,255,255,0.08);">
+              <div class="meta">${u.series_name}</div>
+              <div class="meta">${label} · ${u.direction || ""}</div>
+              <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
+              <div class="meta">${fmtNum(u.cpBefore)} → ${fmtNum(u.cpAfter)} ${u.unit || ""}</div>
+            </div>`;
+        }).join("");
+        body = `
+          <div class="meta" style="margin-top: 10px;">${count} change point${count>1?"s":""} on this commit</div>
+          ${items}
+        `;
+      } else {
+        let deltaBlock = "";
+        if (p.isChangePoint) {
+          const pct = p.cpDeltaPct * 100;
+          const sign = pct >= 0 ? "+" : "";
+          const label = p.regression ? "regression" : "improvement";
+          const klass = p.regression ? "down" : "";
+          deltaBlock = `
+            <div class="delta">
+              <div class="meta">${label} · ${p.direction || ""}</div>
+              <div class="big ${klass}">${sign}${pct.toFixed(1)}%</div>
+              <div class="meta">${fmtNum(p.cpBefore)} → ${fmtNum(p.cpAfter)} ${p.unit || ""}</div>
+            </div>`;
+        }
+        body = `
+          <div class="meta">series: <span style="color:#fff">${p.series_name}</span></div>
+          <div class="meta">value: <span style="color:#fff">${fmtNum(p.value)} ${p.unit || ""}</span></div>
+          ${deltaBlock}
+        `;
+      }
+      panelBody.innerHTML = header + body;
       panel.classList.add("open");
+    }
+
+    const flyPlay = document.getElementById("fly-play");
+    const flyPrev = document.getElementById("fly-prev");
+    const flyNext = document.getElementById("fly-next");
+    const flyCounter = document.getElementById("fly-counter");
+    const flyStatus = document.getElementById("fly-status");
+
+    flyPlay.addEventListener("click", () => k.toggleFlyover());
+    flyPrev.addEventListener("click", () => k.stepFlyover(-1));
+    flyNext.addEventListener("click", () => k.stepFlyover(+1));
+
+    function updateFlyover(e) {
+      const total = e.total || 0;
+      flyCounter.textContent = total > 0 ? `${Math.min(e.idx + 1, total)} / ${total}` : "–";
+      if (e.state === "countdown") {
+        flyPlay.textContent = "⏸";
+        flyStatus.textContent = `starts in ${e.countdown}s`;
+      } else if (e.state === "playing") {
+        flyPlay.textContent = "⏸";
+        flyStatus.textContent = "playing";
+      } else if (e.state === "paused") {
+        flyPlay.textContent = "▶";
+        flyStatus.textContent = "paused";
+      } else if (e.state === "done") {
+        flyPlay.textContent = "▶";
+        flyStatus.textContent = "end — ▶ to replay";
+      } else {
+        flyPlay.textContent = "▶";
+        flyStatus.textContent = "";
+      }
+      flyPrev.disabled = total === 0 || e.idx <= 0;
+      flyNext.disabled = total === 0 || e.idx >= total - 1;
     }
 
     k.narrator.subscribe(e => {
       if (e.type === "render_complete") {
         status.textContent = `${e.point_count} points across ${e.series_count} series · ${e.change_points} change points`;
         buildLegend(e.series);
+        // Kick off the flyover automatically — the 10s countdown gives
+        // viewers time to read the scene first.
+        k.startFlyover();
+      } else if (e.type === "flyover_state") {
+        updateFlyover(e);
       } else if (e.type === "point_hovered") {
-        showPoint(e.point);
+        showPoint(e.point, e.siblings);
       } else if (e.type === "hover_changed") {
         for (let i = 0; i < items.length; i++) {
           const li = items[i];

@@ -215,6 +215,11 @@ export class Kuutar {
       target.z + distance * Math.cos(el) * Math.cos(az),
     );
     this.camera.lookAt(target);
+    // Canonical camera offset (from target) captured at scene setup.
+    // Per-stop easing re-derives the camera pose as `endTarget +
+    // initialOffset × zoomFactor` so successive stops don't accumulate
+    // drift, and "zoom in" / "zoom out" stay relative to a fixed baseline.
+    this._initialCamOffset = this.camera.position.clone().sub(target);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(w, h);
@@ -268,6 +273,16 @@ export class Kuutar {
     this._locked = null;   // { mesh, zi, idx, x }
     this._byIdx = new Map();
 
+    // Flyover tour state. Populated by `startFlyover`; controlled via
+    // play/pause/step methods. Emits `flyover_state` events so the HTML
+    // controls can render.
+    this._flyState = "idle";    // idle | countdown | playing | paused | done
+    this._flyList = [];         // sorted CP list
+    this._flyIdx = 0;
+    this._flyTimer = null;
+    this._flyCountdown = 0;
+    this._flyEaseRAF = null;
+
     // Hover/picking state.
     this._seriesLines = [];   // zi -> Line (populated each render)
     this._cpBeforeLines = []; // zi -> Line2 for the pre-change-point segment (optional)
@@ -276,11 +291,19 @@ export class Kuutar {
     this._lineBaseWidth = 1;  // pixels
     this._raycaster = new THREE.Raycaster();
     this._mouseNdc = new THREE.Vector2();
-    this.renderer.domElement.addEventListener("pointermove", (e) => this._onPointerMove(e));
+    // Any user interaction on the canvas aborts a running countdown —
+    // the user can press play to restart the tour manually. Hover, click,
+    // scroll / zoom, and rotate / pan all count as interaction.
+    const cancelCountdown = () => {
+      if (this._flyState === "countdown") this.pauseFlyover();
+    };
+    this.renderer.domElement.addEventListener("pointermove", (e) => { cancelCountdown(); this._onPointerMove(e); });
     this.renderer.domElement.addEventListener("pointerleave", () => this._clearHover());
+    this.renderer.domElement.addEventListener("wheel", cancelCountdown, { passive: true });
     // Drag detection: if pointerup is within a few pixels of pointerdown,
     // treat as a click; otherwise it was a rotate/pan and we exit any lock.
     this.renderer.domElement.addEventListener("pointerdown", (e) => {
+      cancelCountdown();
       this._pressStart = { x: e.clientX, y: e.clientY, button: e.button };
     });
     this.renderer.domElement.addEventListener("pointerup", (e) => {
@@ -381,6 +404,12 @@ export class Kuutar {
     this._byIdx = new Map();
     if (this._cursorPlane) this._cursorPlane.visible = false;
     if (this._lockedPlane) this._lockedPlane.visible = false;
+    // Cancel any running flyover from a previous dataset.
+    if (this._flyTimer) { clearTimeout(this._flyTimer); clearInterval(this._flyTimer); this._flyTimer = null; }
+    if (this._flyEaseRAF) { cancelAnimationFrame(this._flyEaseRAF); this._flyEaseRAF = null; }
+    this._flyList = [];
+    this._flyIdx = 0;
+    this._flyState = "idle";
     if (!runs || runs.length === 0) return;
 
     // Gather series (test_name, metric_name) -> info.
@@ -478,14 +507,15 @@ export class Kuutar {
       // marker knows whether it is THE change point and whether that
       // change is a regression or an improvement.
       const cp = detectChangePoint(s.values);
-      let cpIdx = -1, cpDeltaPct = 0, cpIsRegression = false;
+      let cpIdx = -1, cpDeltaPct = 0, cpIsRegression = false, cpEntry = null;
       if (cp) {
         cpIdx = cp.i;
         cpDeltaPct = (cp.after - cp.before) / Math.max(Math.abs(cp.before), 1e-9);
         // Direction inversion: for lower_is_better, an increase is bad;
         // for higher_is_better, a decrease is bad.
         cpIsRegression = (s.direction === "higher_is_better") ? (cpDeltaPct < 0) : (cpDeltaPct > 0);
-        this._changePoints.push({ zi, idx: cpIdx, deltaPct: cpDeltaPct, regression: cpIsRegression });
+        cpEntry = { zi, idx: cpIdx, deltaPct: cpDeltaPct, regression: cpIsRegression, mesh: null };
+        this._changePoints.push(cpEntry);
       }
 
       const linePos = [];
@@ -557,6 +587,7 @@ export class Kuutar {
           } : {}),
         };
         this.pointsGroup.add(mesh);
+        if (isCp && cpEntry) cpEntry.mesh = mesh;
         // Column index: meshes with the same `i` share a time/commit; used
         // by the time-cursor highlight to snap them all to full opacity.
         if (!this._byIdx.has(i)) this._byIdx.set(i, []);
@@ -739,6 +770,10 @@ export class Kuutar {
   }
 
   _onPointerClick() {
+    // Any user click pauses an in-progress flyover so they can explore.
+    if (this._flyState === "playing" || this._flyState === "countdown") {
+      this.pauseFlyover();
+    }
     const mesh = this._hoveredMesh;
     if (!this._locked) {
       if (mesh) this._enterLock(mesh);
@@ -753,7 +788,7 @@ export class Kuutar {
     }
   }
 
-  _enterLock(mesh) {
+  _enterLock(mesh, opts = {}) {
     const wasLocked = !!this._locked;
     // Tear down any existing lock's column state without a re-apply pass
     // (the new lock will cover it).
@@ -763,15 +798,27 @@ export class Kuutar {
       this._locked = null;
       for (const m of old) this._applyMeshState(m);
     }
-    this._locked = { mesh, zi: mesh.userData.zi, idx: mesh.userData.idx, x: mesh.position.x };
+    // `zis` carries every series that should read as locked-HOT. Normally
+    // just the clicked series; for flyover stops with multiple CPs on
+    // the same commit it's all the sibling CP series so their timeline
+    // lines light up together.
+    const zis = opts.siblings && opts.siblings.length > 0
+      ? opts.siblings.map(s => s.zi)
+      : [mesh.userData.zi];
+    this._locked = { mesh, zi: mesh.userData.zi, zis, idx: mesh.userData.idx, x: mesh.position.x };
     this._lockedPlane.position.x = mesh.position.x;
     this._lockedPlane.visible = true;
     this._lockedColumn = this._byIdx.get(mesh.userData.idx) || [];
     for (const m of this._lockedColumn) this._applyMeshState(m);
     // Locked series must read as HOT regardless of current hover.
     this._applyHoverState();
-    // Pin the info box to the clicked point.
-    this.narrator.emit({ type: "point_hovered", point: mesh.userData });
+    // Pin the info box to the clicked point (or all CPs on this commit
+    // for a flyover stop).
+    this.narrator.emit({
+      type: "point_hovered",
+      point: mesh.userData,
+      siblings: opts.siblings || null,
+    });
   }
 
   _exitLock() {
@@ -784,6 +831,198 @@ export class Kuutar {
     this._applyHoverState();
   }
 
+  // ---------- Flyover tour ----------
+
+  startFlyover() {
+    this._cancelFlyoverTimers();
+    if (!this._changePoints || this._changePoints.length === 0) return;
+    // Group change points by their commit (idx). Each stop is one commit
+    // that has at least one CP; within a stop, list CPs largest-first.
+    // Stops are ordered newest commit first so the tour walks backward
+    // in time — matching how a human would read "what changed recently".
+    const byIdx = new Map();
+    for (const cp of this._changePoints) {
+      if (!cp.mesh) continue;
+      if (!byIdx.has(cp.idx)) byIdx.set(cp.idx, []);
+      byIdx.get(cp.idx).push(cp);
+    }
+    for (const list of byIdx.values()) {
+      list.sort((a, b) => Math.abs(b.deltaPct) - Math.abs(a.deltaPct));
+    }
+    // Build stops across every commit (newest first). Commits within the
+    // server's `recent_cp_days` window become stops regardless of whether
+    // they carry CPs ("recent activity is always worth a glance"); older
+    // commits only stop when they actually have CPs.
+    const recentDays = (this.config && this.config.recent_cp_days) || 14;
+    const recentMs = recentDays * 86400 * 1000;
+    const allIdx = [...this._byIdx.keys()].sort((a, b) => b - a);
+    const newestTs = allIdx.length > 0
+      ? Math.max(...allIdx.map(i => (this._byIdx.get(i)[0]?.userData.timestamp) || 0))
+      : 0;
+    const threshold = newestTs - recentMs;
+    const stops = [];
+    for (const idx of allIdx) {
+      const col = this._byIdx.get(idx) || [];
+      const ts = col[0]?.userData.timestamp || 0;
+      const cps = byIdx.get(idx) || [];
+      const isRecent = ts >= threshold;
+      if (cps.length > 0 || isRecent) {
+        stops.push({ idx, cps });
+      }
+    }
+    this._flyList = stops;
+    this._flyIdx = 0;
+    this._flyState = "countdown";
+    this._flyCountdown = 10;
+    this._emitFlyover();
+    this._flyTimer = setInterval(() => {
+      this._flyCountdown--;
+      if (this._flyCountdown <= 0) {
+        clearInterval(this._flyTimer);
+        this._flyTimer = null;
+        this._flyState = "playing";
+        this._playFlyStep();
+      } else {
+        this._emitFlyover();
+      }
+    }, 1000);
+  }
+
+  pauseFlyover() {
+    if (this._flyState === "idle" || this._flyState === "done") return;
+    this._cancelFlyoverTimers();
+    this._flyState = "paused";
+    this._emitFlyover();
+  }
+
+  resumeFlyover() {
+    if (this._flyState !== "paused") {
+      // Allow play button to act as "start" when idle/done.
+      if (this._flyState === "idle" || this._flyState === "done") this.startFlyover();
+      return;
+    }
+    this._flyState = "playing";
+    this._playFlyStep();
+  }
+
+  toggleFlyover() {
+    if (this._flyState === "playing" || this._flyState === "countdown") {
+      this.pauseFlyover();
+    } else {
+      this.resumeFlyover();
+    }
+  }
+
+  stepFlyover(dir) {
+    if (this._flyList.length === 0) return;
+    this._cancelFlyoverTimers();
+    // A manual step during countdown pauses the tour.
+    if (this._flyState === "countdown") this._flyState = "paused";
+    // Step jumps to the next/previous CP stop, skipping plain (non-CP)
+    // scan stops. If none exists in that direction, stay put.
+    let next = this._flyIdx;
+    while (true) {
+      next += dir;
+      if (next < 0 || next >= this._flyList.length) return;
+      if (this._flyList[next].cps.length > 0) break;
+    }
+    this._flyIdx = next;
+    this._goToCp(this._flyIdx);
+    if (this._flyState === "playing") {
+      this._flyTimer = setTimeout(() => this._advanceFly(), 4000);
+    }
+    this._emitFlyover();
+  }
+
+  _playFlyStep() {
+    if (this._flyIdx >= this._flyList.length) {
+      this._flyState = "done";
+      this._emitFlyover();
+      return;
+    }
+    this._goToCp(this._flyIdx);
+    this._emitFlyover();
+    this._flyTimer = setTimeout(() => this._advanceFly(), 4000);
+  }
+
+  _advanceFly() {
+    this._flyTimer = null;
+    if (this._flyState !== "playing") return;
+    this._flyIdx++;
+    this._playFlyStep();
+  }
+
+  _cancelFlyoverTimers() {
+    if (this._flyTimer) {
+      clearTimeout(this._flyTimer);
+      clearInterval(this._flyTimer);
+      this._flyTimer = null;
+    }
+  }
+
+  _goToCp(idx) {
+    const stop = this._flyList[idx];
+    if (!stop) return;
+    const isFirst = idx === 0;
+    const col = this._byIdx.get(stop.idx) || [];
+
+    if (stop.cps.length === 0) {
+      // Plain scan stop: plane moves, no lock. First stop also pulls the
+      // camera back to a slight zoom-out overview; later plain stops keep
+      // the camera wherever it was.
+      this._exitLock();
+      const anchor = col[0];
+      if (!anchor) return;
+      this._setHoveredMesh(anchor);
+      if (isFirst) this._easeCameraTarget(anchor.position, { zoomFactor: 1.2 });
+      return;
+    }
+
+    // CP stop — zoom in onto the CP cluster (except the very first stop,
+    // which stays at the overview zoom-out level).
+    this._setHoveredMesh(null);
+    const largest = stop.cps[0];
+    if (!largest.mesh) return;
+    this._enterLock(largest.mesh, { siblings: stop.cps });
+    const centroid = new THREE.Vector3();
+    for (const cp of stop.cps) centroid.add(cp.mesh.position);
+    centroid.multiplyScalar(1 / stop.cps.length);
+    this._easeCameraTarget(centroid, { zoomFactor: isFirst ? 1.2 : 0.75 });
+  }
+
+  _easeCameraTarget(pos, { zoomFactor = 1.0 } = {}) {
+    if (this._flyEaseRAF) cancelAnimationFrame(this._flyEaseRAF);
+    const controls = this.camController.controls;
+    const startTarget = controls.target.clone();
+    const endTarget = pos.clone();
+    const startCam = this.camera.position.clone();
+    // End pose = canonical offset scaled by zoom, rooted at endTarget.
+    const endCam = endTarget.clone()
+      .add(this._initialCamOffset.clone().multiplyScalar(zoomFactor));
+    const duration = 900;
+    const t0 = performance.now();
+    const tick = () => {
+      const k = Math.min(1, (performance.now() - t0) / duration);
+      const e = k * k * (3 - 2 * k);  // smoothstep
+      controls.target.lerpVectors(startTarget, endTarget, e);
+      this.camera.position.lerpVectors(startCam, endCam, e);
+      controls.update();
+      if (k < 1) this._flyEaseRAF = requestAnimationFrame(tick);
+      else this._flyEaseRAF = null;
+    };
+    tick();
+  }
+
+  _emitFlyover() {
+    this.narrator.emit({
+      type: "flyover_state",
+      state: this._flyState,
+      idx: this._flyIdx,
+      total: this._flyList.length,
+      countdown: this._flyCountdown,
+    });
+  }
+
   _clearHover() {
     this._setHoveredMesh(null);
     this.hoverSeries(-1);
@@ -792,9 +1031,9 @@ export class Kuutar {
   _applyHoverState(neighborsFaded = false) {
     const HOT = 0.95, WARM = 0.65, DIM_OP = 0.08;
     const HOT_W = 3.5, WARM_W = 2;
-    const lockedZi = this._locked ? this._locked.zi : -1;
-    // In locked mode: no WARM neighbors at all — only the locked line and
-    // (if distinct) the currently-hovered line read as HOT. Everything
+    const lockedZis = this._locked ? new Set(this._locked.zis) : null;
+    // In locked mode: no WARM neighbors at all — only the locked line(s)
+    // and (if distinct) the currently-hovered line read as HOT. Everything
     // else is DIM, immediately.
     if (this._locked) neighborsFaded = true;
     const setTargets = (line, i) => {
@@ -802,7 +1041,7 @@ export class Kuutar {
       const baseOp = line.userData.baseOpacity ?? this._lineBaseOpacity;
       const baseW  = line.userData.baseWidth   ?? this._lineBaseWidth;
       let op, w;
-      const isLocked = i === lockedZi;
+      const isLocked = lockedZis ? lockedZis.has(i) : false;
       if (this._hoveredZi === -1) {
         if (isLocked) { op = Math.max(baseOp, HOT); w = Math.max(baseW, HOT_W); }
         else          { op = baseOp; w = baseW; }
@@ -880,6 +1119,15 @@ export class Kuutar {
   }
 
   async fetchAndRender(url) {
+    // Pull server config first so `startFlyover` can honour the
+    // `recent_cp_days` window. A missing endpoint just leaves defaults
+    // in place — non-fatal.
+    try {
+      const cr = await fetch("/api/v3/config");
+      if (cr.ok) this.config = await cr.json();
+    } catch (e) { /* ignore */ }
+    this.config = this.config || { recent_cp_days: 14 };
+
     const res = await fetch(url);
     if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
     const runs = await res.json();
