@@ -261,7 +261,7 @@
           <p>Sign in with GitHub. We'll list your repos and you pick which
              ones to analyse. You get live updates as new workflow runs
              complete.</p>
-          <a class="signin" id="signin-btn" href="/login">Sign in with GitHub →</a>
+          <a class="signin" id="signin-btn" href="login">Sign in with GitHub →</a>
         </div>
         <div class="path">
           <h2>Explore a public repo</h2>
@@ -527,7 +527,7 @@
     if (!hasRepo) {
       landingEl.style.display = "flex";
       // Grey out the sign-in link when OAuth isn't configured server-side.
-      fetch("/api/v3/config").then(r => r.ok ? r.json() : {}).then(cfg => {
+      fetch("api/v3/config").then(r => r.ok ? r.json() : {}).then(cfg => {
         if (!cfg.auth_enabled) {
           const btn = document.getElementById("signin-btn");
           btn.setAttribute("aria-disabled", "true");
@@ -548,7 +548,7 @@
         }
         statusEl.textContent = "Requesting backfill…";
         try {
-          const r = await fetch("/api/v3/public/connect", {
+          const r = await fetch("api/v3/public/connect", {
             method: "POST",
             headers: {"content-type": "application/json"},
             body: JSON.stringify({repo}),

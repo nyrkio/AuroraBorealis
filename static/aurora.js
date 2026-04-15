@@ -1265,7 +1265,7 @@ export class Aurora {
     // `recent_cp_days` window. A missing endpoint just leaves defaults
     // in place — non-fatal.
     try {
-      const cr = await fetch("/api/v3/config");
+      const cr = await fetch("api/v3/config");
       if (cr.ok) this.config = await cr.json();
     } catch (e) { /* ignore */ }
     this.config = this.config || { recent_cp_days: 14 };
