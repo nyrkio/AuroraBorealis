@@ -7,16 +7,29 @@
     html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; color: #cdd; font-family: sans-serif; overflow: hidden; }
     #graph { position: absolute; inset: 0; }
 
-    #legend { position: absolute; top: 8px; left: 8px; background: rgba(0,0,0,0.55); padding: 8px 12px; border-radius: 6px; font-size: 12px; z-index: 2; }
+    #status-panel { position: absolute; top: 10px; left: 50%;
+      transform: translateX(-50%);
+      padding: 6px 14px; background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.08); border-radius: 8px;
+      color: #cdd; font-size: 11px; z-index: 2;
+      backdrop-filter: blur(4px);
+      white-space: nowrap;
+    }
+    #status-panel strong { margin-right: 8px; }
+    #bottom-hint { position: absolute; bottom: 10px; right: 10px;
+      font-size: 11px; color: #cdd; opacity: 0.55; z-index: 2;
+      max-width: 340px; text-align: right; line-height: 1.45;
+    }
     .shape-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
     .swatch { display: inline-block; width: 14px; text-align: center; }
 
     #series-panel {
-      position: absolute; left: 0; top: 160px; bottom: 8px; width: 210px;
+      flex: 1 1 auto; min-height: 0;
       padding: 8px 12px;
-      font-size: 11px; color: #cdd; z-index: 2;
+      font-size: 11px; color: #cdd;
       display: flex; flex-direction: column;
       background: linear-gradient(to right, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0) 100%);
+      border-radius: 8px;
     }
     #series-panel h3, #series-pager { flex: 0 0 auto; }
     #series-list { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
@@ -63,20 +76,21 @@
     #commit-panel .close { position: absolute; top: 8px; right: 12px;
       cursor: pointer; opacity: 0.5; font-size: 16px; }
     #commit-panel .close:hover { opacity: 1; }
-    #cp-hint { position: absolute; bottom: 8px; right: 8px;
-      font-size: 11px; color: #cdd; opacity: 0.5; z-index: 2; }
 
+    #left-column {
+      position: absolute; left: 10px; top: 10px; bottom: 10px;
+      width: 220px; z-index: 2;
+      display: flex; flex-direction: column; gap: 10px;
+    }
     #filters {
-      position: absolute; top: 10px; left: 50%;
-      transform: translateX(-50%); z-index: 4;
-      display: flex; align-items: flex-end; gap: 20px;
-      padding: 10px 16px;
+      flex: 0 0 auto;
+      display: flex; flex-direction: column; gap: 10px;
+      padding: 10px 14px;
       background: rgba(0,0,0,0.45);
       border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 12px;
+      border-radius: 10px;
       color: #cdd; font-size: 11px;
       backdrop-filter: blur(4px);
-      max-width: 80vw; flex-wrap: wrap;
     }
     #filters .group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
     #filters .group-title { opacity: 0.6; font-size: 10px; letter-spacing: 0.05em;
@@ -87,6 +101,43 @@
                              text-overflow: ellipsis; }
     #filters input[type="radio"] { margin: 0; accent-color: #78c8ff; }
     #filters .slider-group { min-width: 280px; }
+    #time-filter {
+      position: absolute; bottom: 14px; left: 220px; right: 330px;
+      z-index: 4;
+      padding: 10px 16px;
+      background: rgba(0,0,0,0.45);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 12px;
+      color: #cdd; font-size: 11px;
+      backdrop-filter: blur(4px);
+    }
+    #time-filter .group-title { opacity: 0.6; font-size: 10px; letter-spacing: 0.05em;
+                                text-transform: uppercase; margin-bottom: 4px; }
+    #time-filter .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
+    #time-filter .slider-wrap input[type="range"] {
+      position: absolute; width: 100%; pointer-events: none;
+      -webkit-appearance: none; appearance: none; background: none;
+      height: 4px; top: 12px; left: 0; margin: 0;
+    }
+    #time-filter .slider-wrap input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #time-filter .slider-wrap input[type="range"]::-moz-range-track {
+      height: 4px; background: rgba(255,255,255,0.12); border-radius: 2px;
+    }
+    #time-filter .slider-wrap input[type="range"]::-webkit-slider-thumb {
+      pointer-events: auto; -webkit-appearance: none;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+      margin-top: -5px;
+    }
+    #time-filter .slider-wrap input[type="range"]::-moz-range-thumb {
+      pointer-events: auto;
+      width: 14px; height: 14px; border-radius: 50%;
+      background: #78c8ff; border: none; cursor: pointer;
+    }
+    #time-filter .slider-labels { display: flex; justify-content: space-between; font-size: 10px;
+                                  opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
     #filters .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
     #filters .slider-wrap input[type="range"] {
       position: absolute; width: 100%; pointer-events: none;
@@ -144,39 +195,36 @@
   </script>
 </head>
 <body>
-  <div id="legend">
-    <strong>kuutar v0</strong><br/>
-    <div class="shape-row"><span class="swatch">●</span> duration (s/ms/ns)</div>
-    <div class="shape-row"><span class="swatch">▶</span> throughput (ops/s)</div>
-    <div class="shape-row"><span class="swatch">■</span> size (bytes)</div>
-    <div class="shape-row"><span class="swatch">▬</span> ratio (%)</div>
-    <div class="shape-row"><span class="swatch">◆</span> count</div>
-    <div style="margin-top:8px; opacity:0.6; font-size:11px; line-height:1.5;">
-      drag to rotate · right-drag to pan · scroll to zoom
-    </div>
-    <div id="status" style="margin-top:6px; opacity:0.7;"></div>
+  <div id="status-panel">
+    <strong>kuutar v0</strong><span id="status" style="opacity:0.85;"></span>
+  </div>
+  <div id="bottom-hint">
+    drag to rotate · right-drag to pan · scroll to zoom<br/>
+    hover any point for commit details · red = regression, green = improvement
   </div>
 
-  <div id="series-panel">
-    <h3>series</h3>
-    <div id="series-pager" style="display: none">
-      <button id="page-prev" title="previous page">«</button>
-      <span class="counter" id="page-counter"></span>
-      <button id="page-next" title="next page">»</button>
+  <div id="left-column">
+    <div id="filters" style="display: none"></div>
+    <div id="series-panel">
+      <h3>series</h3>
+      <div id="series-pager" style="display: none">
+        <button id="page-prev" title="previous page">«</button>
+        <span class="counter" id="page-counter"></span>
+        <button id="page-next" title="next page">»</button>
+      </div>
+      <ul id="series-list"></ul>
     </div>
-    <ul id="series-list"></ul>
   </div>
 
   <div id="graph"></div>
 
-  <div id="filters" style="display: none"></div>
+  <div id="time-filter" style="display: none"></div>
 
   <div id="commit-panel">
     <span class="close" id="cp-close">✕</span>
     <div id="cp-body"></div>
   </div>
 
-  <div id="cp-hint">hover any point for commit details · red = regression, green = improvement</div>
 
   <div id="flyover">
     <button id="fly-prev" title="previous change point">⏮</button>
@@ -265,6 +313,13 @@
       if (c && typeof c.commit_time === "number") return fmtDate(c.commit_time * 1000);
       return fmtDate(fallbackMs);
     }
+    const KIND_GLYPH = {
+      duration:   "●",
+      throughput: "▶",
+      size:       "■",
+      ratio:      "▬",
+      count:      "◆",
+    };
     function escHtml(s) {
       return String(s || "").replace(/[&<>"']/g, (c) => (
         {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
@@ -328,9 +383,11 @@
               <div class="meta">${fmtNum(p.cpBefore)} → ${fmtNum(p.cpAfter)} ${p.unit || ""}</div>
             </div>`;
         }
+        const glyph = KIND_GLYPH[p.kind] || "●";
         body = `
-          <div class="meta">series: <span style="color:#fff">${p.series_name}</span></div>
-          <div class="meta">value: <span style="color:#fff">${fmtNum(p.value)} ${p.unit || ""}</span></div>
+          <div class="meta" style="color:#fff">${escHtml(p.series_name)}</div>
+          <div class="meta"><span style="color:#fff">${glyph} ${escHtml(p.kind || "")}</span></div>
+          <div class="meta">value: <span style="color:#fff">${fmtNum(p.value)} ${escHtml(p.unit || "")}</span></div>
           ${deltaBlock}
         `;
       }
@@ -373,10 +430,7 @@
 
     k.narrator.subscribe(e => {
       if (e.type === "render_complete") {
-        const seriesNote = (e.total_series && e.total_series > e.series_count)
-          ? `${e.series_count} of ${e.total_series} series`
-          : `${e.series_count} series`;
-        status.textContent = `${e.point_count} points across ${seriesNote} · ${e.change_points} change points`;
+        status.textContent = `· ${e.point_count} points · ${e.change_points} change points`;
         buildLegend(e.series);
         updatePager(e);
         // Kick off the flyover automatically — the 10s countdown gives
@@ -431,6 +485,7 @@
     }
 
     const filtersEl = document.getElementById("filters");
+    const timeFilterEl = document.getElementById("time-filter");
 
     function extractTs(x) {
       if (x && typeof x === "object" && "$date" in x) return new Date(x.$date).getTime();
@@ -445,15 +500,11 @@
 
     function renderFilters(facetsData) {
       filtersEl.innerHTML = "";
-      // Hide the whole bar if there are no varying dims and no timestamps
-      // (e.g., empty dataset).
+      timeFilterEl.innerHTML = "";
       const span = facetsData.timestamp_span;
       const varying = facetsData.varying || [];
-      if (varying.length === 0 && !span) {
-        filtersEl.style.display = "none";
-        return;
-      }
-      filtersEl.style.display = "flex";
+      filtersEl.style.display = varying.length > 0 ? "flex" : "none";
+      timeFilterEl.style.display = span ? "block" : "none";
 
       // Radio group per varying dim.
       for (const dim of varying) {
@@ -490,19 +541,17 @@
         filtersEl.appendChild(group);
       }
 
-      // Time range slider.
+      // Time range slider, pinned to the bottom just past the series
+      // panel's right edge so it aligns with that column of UI.
       if (span) {
         const minMs = extractTs(span.min);
         const maxMs = extractTs(span.max);
         const day = 86400 * 1000;
-        // Snap bounds to day resolution, inclusive on both ends.
         const lo = Math.floor(minMs / day) * day;
         const hi = Math.ceil(maxMs / day) * day;
         const sinceMs = filters.since ? new Date(filters.since).getTime() : lo;
         const untilMs = filters.until ? new Date(filters.until).getTime() : hi;
-        const group = document.createElement("div");
-        group.className = "group slider-group";
-        group.innerHTML = `
+        timeFilterEl.innerHTML = `
           <div class="group-title">time range</div>
           <div class="slider-wrap">
             <input id="f-since" type="range" min="${lo}" max="${hi}" step="${day}" value="${sinceMs}">
@@ -513,11 +562,10 @@
             <span id="f-until-label">${fmtDay(untilMs)}</span>
           </div>
         `;
-        filtersEl.appendChild(group);
-        const sinceEl = group.querySelector("#f-since");
-        const untilEl = group.querySelector("#f-until");
-        const sinceLab = group.querySelector("#f-since-label");
-        const untilLab = group.querySelector("#f-until-label");
+        const sinceEl = timeFilterEl.querySelector("#f-since");
+        const untilEl = timeFilterEl.querySelector("#f-until");
+        const sinceLab = timeFilterEl.querySelector("#f-since-label");
+        const untilLab = timeFilterEl.querySelector("#f-until-label");
         const update = () => {
           let s = +sinceEl.value, u = +untilEl.value;
           if (s > u) {

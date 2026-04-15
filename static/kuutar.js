@@ -531,16 +531,16 @@ export class Kuutar {
     const keys = sorted.slice(pageStart, pageStart + MAX_SERIES);
     const zStep = keys.length > 1 ? this.axisZ / (keys.length - 1) : this.axisZ;
 
-    // Marker size scales to neighbor spacing — literally: half the
-    // tighter of the Z-spacing (series) and the natural X-spacing
-    // (commits). No floor; if the data is dense, markers shrink to
-    // fit. Upper bound 0.045 for the sparse-two-series case.
+    // Marker size: min 0.45 × tighter neighbor spacing (so dense data
+    // fits), max 0.012 absolute (so sparse data — or time slices —
+    // can't grow dots to blobs). Between those bounds it scales with
+    // actual spacing.
     const allTimesSet = new Set();
     for (const run of runs) allTimesSet.add(new Date(_tsOf(run)).getTime());
     const commitTimes = [...allTimesSet].sort((a, b) => a - b);
     const nCommits = commitTimes.length;
     const xSpacingNatural = nCommits > 1 ? this.axisX / (nCommits - 1) : this.axisX;
-    const markerSize = Math.min(0.045, Math.min(zStep, xSpacingNatural) * 0.45);
+    const markerSize = Math.min(0.010, Math.min(zStep, xSpacingNatural) * 0.45);
 
     // X mapping is ordinal. Spacing bounded above at 50 × markerSize
     // so sparse datasets still cluster (not stretched across the whole
@@ -687,6 +687,7 @@ export class Kuutar {
           isPoint: true,
           series: k, zi, idx: globalIdx, localIdx: i,
           series_name, test_name: s.test_name, metric: s.metric,
+          kind,
           unit: s.unit, direction: s.direction,
           value: s.values[i], timestamp: s.times[i],
           commit: s.commits[i],
