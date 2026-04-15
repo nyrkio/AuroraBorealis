@@ -13,19 +13,15 @@ import { AudioEngine } from "./audio.js";
 
 const AXIS_LEN = 2.0;
 
-// Time-based colormap: newest = shiny silver/cyan, fading backward through
-// calm blues, pale gray, to near-black at the oldest timestamp.
-// Gradient within the primary window (t=0 at the x=0 boundary, t=1 at now):
-//   medium-dark gray → pale gray → white → blue → stronger blue → electric blue
-// The t=0 value is chosen so the past-side gradient (see pastColor) continues
-// from the same color — no visual jump crossing the x=0 boundary.
+// Time-based colormap: saturated blue across almost the entire primary
+// window, a narrow whitening zone at the x=0 boundary (picked up by
+// `whitenAmount` below), and past-side grayscale fading to near-black.
+// t=0 is at the x=0 boundary; t=1 is at now().
 const TIME_STOPS = [
-  [0.00, [0x3a, 0x3a, 0x40]],  // medium-dark gray (meets pastColor at boundary)
-  [0.15, [0x70, 0x74, 0x78]],  // pale gray
-  [0.32, [0xd0, 0xd4, 0xd8]],  // near white
-  [0.55, [0x3a, 0x78, 0xb0]],  // medium blue
-  [0.75, [0x40, 0xa0, 0xe8]],  // strong blue
-  [0.90, [0x78, 0xc8, 0xff]],  // electric blue
+  [0.00, [0x4a, 0x82, 0xb8]],  // medium blue (→ near-white after boundary whitening)
+  [0.10, [0x4a, 0x90, 0xd0]],  // saturated medium blue — no more whitening
+  [0.30, [0x48, 0xa4, 0xe8]],  // strong blue
+  [0.60, [0x64, 0xc0, 0xf8]],  // brighter blue
   [1.00, [0x8c, 0xd4, 0xff]],  // peak blue at now
 ];
 
@@ -56,13 +52,14 @@ function timeColor(t) {
 // Points older than the primary window fade from gray to black as they recede
 // into the past. `t` = 0 at the edge of the primary window, 1 at the oldest
 // point in the dataset.
-// How much to lift the primary color toward white as a smooth function of t.
-// 0 for the newest ~15% (keeps full blue/silver intent), ramps to 0.40 for
-// t <= 0.65 — no visible seam around the "last 25%" threshold.
+// Whitening is now tightly scoped to the x=0 boundary — 0.85 at t=0,
+// smoothly dropping to 0 by t=0.10. Everything from ~10% of the primary
+// onward retains full blue saturation. The boundary band blends into
+// `pastColor` on the other side of x=0 without a seam.
 function whitenAmount(t) {
-  const x = Math.max(0, Math.min(1, (t - 0.65) / 0.20));
+  const x = Math.max(0, Math.min(1, (0.10 - t) / 0.10));
   const smooth = x * x * (3 - 2 * x);
-  return 0.40 * (1 - smooth);
+  return 0.85 * smooth;
 }
 
 function pastColor(t) {
@@ -119,24 +116,33 @@ function tierLineHex(zi) {
   return seriesHexColor(zi);
 }
 
-// Grayscale version of the time colormap — same luminance ramp, no hue.
+// Dedicated grayscale ramp for tier B. Not derived from TIME_STOPS'
+// luminance (which dips mid-curve where the colormap shifts from pale
+// gray to saturated blue), and brighter overall so peaks near now()
+// read as near-white rather than medium gray.
+const GRAY_STOPS = [
+  [0.00, 0x38],
+  [0.15, 0x74],
+  [0.32, 0xac],
+  [0.55, 0xcc],
+  [0.75, 0xe4],
+  [0.90, 0xf0],
+  [1.00, 0xf6],
+];
+
 function timeGrayColor(t) {
   t = Math.max(0, Math.min(1, t));
-  for (let i = 0; i < TIME_STOPS.length - 1; i++) {
-    const [t0, c0] = TIME_STOPS[i];
-    const [t1, c1] = TIME_STOPS[i + 1];
+  for (let i = 0; i < GRAY_STOPS.length - 1; i++) {
+    const [t0, g0] = GRAY_STOPS[i];
+    const [t1, g1] = GRAY_STOPS[i + 1];
     if (t <= t1) {
       const f = (t - t0) / (t1 - t0);
-      const r = c0[0] + (c1[0] - c0[0]) * f;
-      const g = c0[1] + (c1[1] - c0[1]) * f;
-      const b = c0[2] + (c1[2] - c0[2]) * f;
-      const l = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255;
-      return _srgb(l, l, l);
+      const g = (g0 + (g1 - g0) * f) / 255;
+      return _srgb(g, g, g);
     }
   }
-  const last = TIME_STOPS[TIME_STOPS.length - 1][1];
-  const l = (0.2126 * last[0] + 0.7152 * last[1] + 0.0722 * last[2]) / 255;
-  return _srgb(l, l, l);
+  const last = GRAY_STOPS[GRAY_STOPS.length - 1][1] / 255;
+  return _srgb(last, last, last);
 }
 
 function variance(xs) {
@@ -557,13 +563,21 @@ export class Kuutar {
         const isCp = i === cpIdx;
         const isPreCp = cpIdx > 0 && i === cpIdx - 1;
         const markerColor = isCp ? (cpIsRegression ? CP_REGRESSION : CP_IMPROVEMENT) : color;
+        // "Starlight" treatment for every primary, non-CP marker
+        // regardless of tier: a self-glow floor across the whole primary
+        // span (not just the newest quarter), higher opacity, and
+        // sharper specular. Keeps small default points and large
+        // on-plane points consistent — only size differs.
+        const isStar = !isCp && ts >= primaryStart;
         const mat = new THREE.MeshStandardMaterial({
           color: markerColor,
           metalness: isCp ? 0.5 : 0.9,
-          roughness: isCp ? 0.35 : 0.28,
+          roughness: isCp ? 0.35 : (isStar ? 0.22 : 0.28),
           emissive: markerColor,
-          emissiveIntensity: isCp ? 0.7 : emissiveFactor * 0.75,
-          opacity: isCp ? 0.95 : 0.75,
+          emissiveIntensity: isCp ? 0.7
+                           : isStar ? (0.20 + emissiveFactor * 0.80)
+                           : emissiveFactor * 0.75,
+          opacity: isCp ? 0.95 : (isStar ? 0.90 : 0.75),
           transparent: true,
           depthWrite: false,
         });
