@@ -11,7 +11,7 @@ import os
 import random
 import sys
 
-from nyrkiov3_v0.app import build_app, DEFAULT_SNAPSHOT_PATH
+from nyrkiov3.app import build_app, DEFAULT_SNAPSHOT_PATH
 
 
 AUTHORS = [
