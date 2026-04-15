@@ -15,9 +15,11 @@
       position: absolute; left: 0; top: 160px; bottom: 8px; width: 210px;
       padding: 8px 12px;
       font-size: 11px; color: #cdd; z-index: 2;
-      overflow-y: auto;
+      display: flex; flex-direction: column;
       background: linear-gradient(to right, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0) 100%);
     }
+    #series-panel h3, #series-pager { flex: 0 0 auto; }
+    #series-list { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
     #series-panel h3 { margin: 0 0 6px 0; font-size: 11px; font-weight: 600; opacity: 0.7; letter-spacing: 0.05em; text-transform: uppercase; }
     #series-pager { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 11px; }
     #series-pager button { background: none; border: 1px solid rgba(255,255,255,0.15); color: #cdd;
@@ -49,7 +51,10 @@
       opacity: 0.7; letter-spacing: 0.05em; text-transform: uppercase; }
     #commit-panel .sha { font-family: ui-monospace, Menlo, monospace;
       color: #ffc860; font-size: 13px; }
-    #commit-panel .subject { margin: 8px 0; font-size: 14px; color: #fff; }
+    #commit-panel a.sha, #commit-panel a.subject { pointer-events: auto;
+      text-decoration: none; cursor: pointer; }
+    #commit-panel a.sha:hover, #commit-panel a.subject:hover { text-decoration: underline; }
+    #commit-panel .subject { margin: 8px 0; font-size: 14px; color: #fff; display: block; }
     #commit-panel .meta { opacity: 0.7; margin: 4px 0; }
     #commit-panel .delta { margin-top: 14px; padding-top: 10px;
       border-top: 1px solid rgba(255,255,255,0.1); }
@@ -260,12 +265,31 @@
       if (c && typeof c.commit_time === "number") return fmtDate(c.commit_time * 1000);
       return fmtDate(fallbackMs);
     }
+    function escHtml(s) {
+      return String(s || "").replace(/[&<>"']/g, (c) => (
+        {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
+    }
+    function commitLink(c) {
+      if (!c || !c.sha || !c.repo) return null;
+      // Expect repo = "owner/name" — the benchzoo v2 convention.
+      if (!/^[^/]+\/[^/]+$/.test(c.repo)) return null;
+      return `https://github.com/${c.repo}/commit/${c.sha}`;
+    }
     function showPoint(p, siblings) {
       const c = p.commit || {};
+      const sha = c.short_sha || (c.sha || "").slice(0, 7);
+      const href = commitLink(c);
+      const shaHtml = href
+        ? `<a class="sha" href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${escHtml(sha)}</a>`
+        : `<div class="sha">${escHtml(sha)}</div>`;
+      const subjectText = c.message || "(no message)";
+      const subjectHtml = href
+        ? `<a class="subject" href="${escHtml(href)}" target="_blank" rel="noopener noreferrer">${escHtml(subjectText)}</a>`
+        : `<div class="subject">${escHtml(subjectText)}</div>`;
       const header = `
-        <div class="sha">${c.short_sha || (c.sha || "").slice(0,7)}</div>
-        <div class="subject">${c.message || "(no message)"}</div>
-        <div class="meta">${c.author || "?"} · ${commitDate(c, p.timestamp)}${c.ref ? " · " + c.ref : ""}${c.repo ? " · " + c.repo : ""}</div>
+        ${shaHtml}
+        ${subjectHtml}
+        <div class="meta">${escHtml(c.author || "?")} · ${escHtml(commitDate(c, p.timestamp))}${c.ref ? " · " + escHtml(c.ref) : ""}${c.repo ? " · " + escHtml(c.repo) : ""}</div>
       `;
       let body;
       if (siblings && siblings.length > 0) {
