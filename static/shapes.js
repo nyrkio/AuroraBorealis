@@ -32,7 +32,7 @@ export function unitToKind(unit, name = "") {
 }
 
 // Geometry factories parameterized by marker radius. The caller picks `size`
-// based on data density (see kuutar.js — it keys off the Z-direction spacing
+// based on data density (see aurora.js — it keys off the Z-direction spacing
 // so markers don't overlap between neighboring series).
 const GEOMETRIES = {
   duration:   (size) => new THREE.SphereGeometry(size, 12, 8),

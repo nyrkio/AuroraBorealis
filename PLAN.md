@@ -1,4 +1,4 @@
-# kuutar — PLAN
+# Aurora Borealis — PLAN
 
 (Name from Kalevala. "Moon-maiden" / weaver of celestial fabric — fitting for a 3D surface visualization.)
 
@@ -24,12 +24,12 @@ three.js-based graph component for the Nyrkiö dashboard. Plots test results ove
 ### Framework wrapper around three.js
 Two options, both compatible with the nyrkiov3 frontend decision:
 
-- **Vanilla wrapper class** — `new Kuutar(canvasEl, opts)` with a small imperative API (`.setData()`, `.setTimeRange()`, `.on('select', ...)`). Works from htmx pages, Svelte, or anything else. No framework dependency. Recommended starting point.
+- **Vanilla wrapper class** — `new Aurora(canvasEl, opts)` with a small imperative API (`.setData()`, `.setTimeRange()`, `.on('select', ...)`). Works from htmx pages, Svelte, or anything else. No framework dependency. Recommended starting point.
 - **Svelte component** wrapping the same vanilla class, for nyrkiov3 consumers that want reactivity sugar.
 
 Ship the vanilla class as the core; the Svelte wrapper is a thin convenience layer.
 
-kuutar must be a **standalone package usable from any host page** — nyrkiov3 dashboard is one consumer, public embed pages are another.
+aurora must be a **standalone package usable from any host page** — nyrkiov3 dashboard is one consumer (aurora was formerly "kuutar"), public embed pages are another.
 
 ### Performance budget
 - 60fps interaction with up to 10k data points across surface.
@@ -53,7 +53,7 @@ Should also work standalone with a static JSON file (for docs/demos).
 
 ## Open questions
 1. Color scheme for value gradients — needs to be colorblind-safe and meaningful (diverging vs. sequential depending on metric type).
-2. Does kuutar own the time-range UI, or is that part of the host dashboard? Recommend: kuutar owns the canvas + minimal in-canvas controls, host owns the chrome.
+2. Does aurora own the time-range UI, or is that part of the host dashboard? Recommend: aurora owns the canvas + minimal in-canvas controls, host owns the chrome.
 3. Accessibility — 3D surfaces are inherently visual; we need a **table fallback** view for screen readers and keyboard nav. Don't ship without it.
 
 <<< 2. I don't know. The time range and other selective controls can work in both directions: parameters to a database query, but if data was already loaded, it can stay in RAM but becomes hidden / outside of zoomed window. So maybe it should be part of kuutar, but could be a separate component. (Not necessarily WebGL or 3d at all)

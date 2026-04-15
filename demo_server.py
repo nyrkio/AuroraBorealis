@@ -1,5 +1,5 @@
-"""kuutar v0 demo: build the nyrkiov3_v0 app, seed synthetic data,
-mount kuutar's static/ at /, run under uvicorn.
+"""Aurora Borealis demo: build the nyrkiov3 app, seed synthetic data,
+mount aurora's static/ at /, run under uvicorn.
 
     python demo_server.py
     # open http://localhost:8000/

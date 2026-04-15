@@ -1,4 +1,4 @@
-// kuutar: a three.js wrapper for 3D benchmark graphs.
+// Aurora Borealis: a three.js wrapper for 3D benchmark graphs.
 // v0: X=time, Y=metric value (normalized per series), Z=(test_name, metric) slot
 // ordered by variance ascending (low-variance series in front).
 // Shape by metric kind (see shapes.js). Color by timestamp (newest = shiny, oldest = dark).
@@ -198,7 +198,7 @@ function detectChangePoint(values, W = 7, threshold = 0.15) {
   return best.score >= threshold ? best : null;
 }
 
-export class Kuutar {
+export class Aurora {
   constructor(container, opts = {}) {
     this.container = container;
     this.narrator = opts.narrator || new Narrator();
