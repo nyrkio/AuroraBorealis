@@ -1076,7 +1076,7 @@
         const trackPx = () => Math.max(400, timeFilterEl.clientWidth - 32);
         const MIN_PX = 14;             // baseline far from mouse (larger = more prune at ends)
         const MIN_PX_NEAR = MIN_PX * 0.4;  // floor near mouse (not 0 — keeps SHAs readable)
-        const ZOOM_RADIUS = 18;        // pct; inside this the fisheye kicks in
+        const ZOOM_RADIUS = 36;        // pct; inside this the fisheye kicks in
 
         // Mouse position along the ticks bar in percent (0..100),
         // or null when the mouse isn't over the time-filter panel.
