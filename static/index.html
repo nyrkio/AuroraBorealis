@@ -16,10 +16,20 @@
       white-space: nowrap;
     }
     #status-panel strong { margin-right: 8px; }
-    #bottom-hint { position: absolute; bottom: 10px; right: 10px;
-      font-size: 11px; color: #cdd; opacity: 0.55; z-index: 2;
-      max-width: 340px; text-align: right; line-height: 1.45;
+    #hint-toggle { cursor: help; margin-left: 8px; opacity: 0.6;
+      border: 1px solid rgba(255,255,255,0.25); border-radius: 50%;
+      width: 14px; height: 14px; display: inline-flex;
+      align-items: center; justify-content: center; font-size: 10px;
+      vertical-align: middle; }
+    #hint-toggle:hover { opacity: 1; }
+    #hint-popover { position: absolute; top: 44px; left: 50%;
+      transform: translateX(-50%); z-index: 5;
+      padding: 8px 14px; font-size: 11px; color: #cdd; opacity: 0.9;
+      background: rgba(0,0,0,0.65); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 8px; line-height: 1.55; text-align: left;
+      display: none; white-space: nowrap;
     }
+    #hint-popover.visible { display: block; }
     .shape-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
     .swatch { display: inline-block; width: 14px; text-align: center; }
 
@@ -242,10 +252,13 @@
 <body>
   <div id="status-panel">
     <strong>Aurora Borealis</strong><span id="status" style="opacity:0.85;"></span>
+    <span id="hint-toggle" title="click for help">?</span>
   </div>
-  <div id="bottom-hint">
+  <div id="hint-popover">
     drag to rotate · right-drag to pan · scroll to zoom<br/>
-    hover any point for commit details · red = regression, green = improvement
+    hover any point for commit details<br/>
+    <span style="color:#f29999">red</span> = regression ·
+    <span style="color:#aee5b8">green</span> = improvement
   </div>
 
   <div id="left-column">
@@ -375,7 +388,13 @@
       for (const s of series) {
         const li = document.createElement("li");
         li.dataset.zi = s.zi;
-        li.textContent = s.name;
+        // Full name on hover; truncate display to just the first
+        // " · "-separated segment (the test name) so the narrow list
+        // stays readable. Remaining tokens (metric, runner) are shown
+        // in the commit panel on hover and in the URL filters.
+        const short = (s.name.split(" · ")[0] || s.name);
+        li.textContent = short;
+        li.title = s.name;
         li.style.setProperty("--series-color", "#" + s.color.toString(16).padStart(6, "0"));
         li.addEventListener("mouseenter", () => k.hoverSeries(s.zi));
         li.addEventListener("mouseleave", () => k.hoverSeries(-1));
@@ -495,7 +514,12 @@
 
     function updateFlyover(e) {
       const total = e.total || 0;
-      flyCounter.textContent = total > 0 ? `${Math.min(e.idx + 1, total)} / ${total}` : "–";
+      // Label "N / M commits" so the number doesn't get confused
+      // with the "X change points" count in the status bar — a single
+      // commit can carry multiple change points.
+      flyCounter.textContent = total > 0
+        ? `${Math.min(e.idx + 1, total)} / ${total} commits`
+        : "–";
       if (e.state === "countdown") {
         flyPlay.textContent = "⏸";
         flyStatus.textContent = `starts in ${e.countdown}s`;
@@ -661,6 +685,20 @@
       }
       return parts.length ? "?" + parts.join("&") : "";
     }
+
+    // Help popover: click "?" in the status bar to reveal camera /
+    // color legend tips; click again (or anywhere else) to dismiss.
+    (() => {
+      const toggle = document.getElementById("hint-toggle");
+      const pop = document.getElementById("hint-popover");
+      if (toggle && pop) {
+        toggle.addEventListener("click", (e) => {
+          e.stopPropagation();
+          pop.classList.toggle("visible");
+        });
+        document.addEventListener("click", () => pop.classList.remove("visible"));
+      }
+    })();
 
     const filtersEl = document.getElementById("filters");
     const timeFilterEl = document.getElementById("time-filter");

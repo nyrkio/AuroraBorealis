@@ -219,7 +219,7 @@ export class Aurora {
     // below the data band.
     const aspect = Math.max(1, w / h);
     this.axisX = AXIS_LEN * aspect;
-    this.axisY = AXIS_LEN * 0.7;
+    this.axisY = AXIS_LEN * 0.45;
     this.axisZ = AXIS_LEN * 1.1;
 
     // Frame the primary window by its actual X extent (not the bounding sphere,
