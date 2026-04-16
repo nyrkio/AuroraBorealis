@@ -281,12 +281,12 @@
       }
       #left-column.open { transform: translateX(0); }
 
+      /* Time slider is always visible on mobile — it's the anchor
+         for flyover state and future per-commit controls. The
+         drawer slides in over it via a higher z-index. */
       #time-filter { left: 8px; right: 8px; bottom: 8px;
-        z-index: 18;
-        transform: translateY(calc(100% + 24px));
-        transition: transform 0.2s ease;
+        z-index: 5;
       }
-      #time-filter.open { transform: translateY(0); }
 
       /* Commit panel becomes a bottom sheet full-width. The desktop
          gradient background (right-edge fade) reads oddly as a bottom
@@ -321,7 +321,6 @@
 <body>
   <div id="mobile-toolbar">
     <button id="btn-panel" title="series &amp; filters" aria-label="series and filters">☰</button>
-    <button id="btn-time" title="time range" aria-label="time range">🕐</button>
   </div>
   <div id="mobile-backdrop"></div>
   <div id="status-panel">
@@ -766,34 +765,23 @@
     // accidentally rotate the scene while scrolling a list.
     (() => {
       const leftCol = document.getElementById("left-column");
-      const timeFilter = document.getElementById("time-filter");
+      const commitPanel = document.getElementById("commit-panel");
       const btnPanel = document.getElementById("btn-panel");
-      const btnTime = document.getElementById("btn-time");
       const backdrop = document.getElementById("mobile-backdrop");
       function syncBodyClass() {
         const anyOpen = leftCol.classList.contains("open") ||
-                        timeFilter.classList.contains("open") ||
-                        document.getElementById("commit-panel").classList.contains("open");
+                        commitPanel.classList.contains("open");
         document.body.classList.toggle("panel-open", anyOpen);
         btnPanel.classList.toggle("active", leftCol.classList.contains("open"));
-        btnTime.classList.toggle("active", timeFilter.classList.contains("open"));
       }
       function closeAll() {
         leftCol.classList.remove("open");
-        timeFilter.classList.remove("open");
-        document.getElementById("commit-panel").classList.remove("open");
+        commitPanel.classList.remove("open");
         syncBodyClass();
       }
       btnPanel.addEventListener("click", (e) => {
         e.stopPropagation();
-        timeFilter.classList.remove("open");
         leftCol.classList.toggle("open");
-        syncBodyClass();
-      });
-      btnTime.addEventListener("click", (e) => {
-        e.stopPropagation();
-        leftCol.classList.remove("open");
-        timeFilter.classList.toggle("open");
         syncBodyClass();
       });
       backdrop.addEventListener("click", closeAll);
