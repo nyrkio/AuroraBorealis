@@ -984,9 +984,44 @@
         const facetsData = await fr.json();
         renderFilters(facetsData);
         await k.fetchAndRender(testsBase + buildQs(filters));
+        maybeTightenPrimaryToLast300();
       } catch (e) {
         status.textContent = "error: " + e.message;
       }
+    }
+
+    // Tighten the primary window to the last 300 commits when that's
+    // narrower than the current (date-based) default. Can only run
+    // once runs data is in hand. Idempotent after the user moves the
+    // slider — _currentSince is then user-owned, so we leave it.
+    let _point300Checked = false;
+    function maybeTightenPrimaryToLast300() {
+      if (_point300Checked) return;
+      _point300Checked = true;
+      const runs = k._lastRuns;
+      if (!runs || runs.length === 0) return;
+      const uniq = new Set();
+      for (const r of runs) {
+        const c = r.commit;
+        const t = (c && typeof c.commit_time === "number")
+          ? c.commit_time * 1000
+          : new Date(typeof r.timestamp === "string" ? r.timestamp
+                     : r.timestamp && r.timestamp.$date).getTime();
+        if (!isNaN(t)) uniq.add(t);
+      }
+      const sorted = [...uniq].sort((a, b) => a - b);
+      if (sorted.length <= 300) return;
+      const point300Ms = sorted[sorted.length - 300];
+      const currentSince = _currentSince ?? sorted[0];
+      if (point300Ms <= currentSince) return;  // 90-day bound already narrower
+      _currentSince = point300Ms;
+      const sinceEl = document.querySelector("#f-since");
+      if (sinceEl) {
+        sinceEl.value = point300Ms;
+        const sinceLab = document.querySelector("#f-since-label");
+        if (sinceLab) sinceLab.textContent = fmtDay(point300Ms);
+      }
+      k.setPrimaryWindow(_currentSince, _currentUntil);
     }
 
     // Skip initial data load when landing overlay is up — the user
