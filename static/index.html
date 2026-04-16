@@ -222,6 +222,22 @@
     }
     #time-filter .slider-labels { display: flex; justify-content: space-between; font-size: 10px;
                                   opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+    /* Per-commit ticks above the slider — githash written vertically,
+       CP count above it when > 0. Faded by default; reveal when the
+       user hovers the time-filter area so the chrome stays clean. */
+    #time-filter .slider-ticks { position: relative; height: 64px; margin-bottom: 2px;
+                                 opacity: 0; transition: opacity 0.25s ease; pointer-events: none; }
+    #time-filter:hover .slider-ticks { opacity: 1; pointer-events: auto; }
+    #time-filter .tick { position: absolute; bottom: 0; transform: translateX(-50%);
+                         display: flex; flex-direction: column; align-items: center;
+                         font-size: 9px; font-family: ui-monospace, Menlo, monospace;
+                         color: #9ab; cursor: default; line-height: 1; }
+    #time-filter .tick .sha { writing-mode: vertical-rl; transform: rotate(180deg);
+                              letter-spacing: 1px; }
+    #time-filter .tick .cp-count { font-size: 9px; color: #f29999; font-weight: 600;
+                                   margin-bottom: 2px; min-height: 10px; }
+    #time-filter .tick .cp-count:empty { min-height: 0; }
+    #time-filter .tick:hover { color: #fff; z-index: 2; }
     #filters .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
     #filters .slider-wrap input[type="range"] {
       position: absolute; width: 100%; pointer-events: none;
@@ -958,8 +974,55 @@
         _sinceIdx = defaultSinceIdx;
         _untilIdx = N - 1;
         timeFilterEl.style.display = "block";
+        // Build a commit → {sha, author, message} index and a CP
+        // count per commit ts. These feed the per-tick labels above
+        // the slider (githash vertical, CP badge above if >0).
+        const commitMeta = new Map();  // ts -> {sha, author, message}
+        for (const r of runs) {
+          const c = r.commit;
+          if (!c) continue;
+          const t = (typeof c.commit_time === "number")
+            ? c.commit_time * 1000
+            : new Date(typeof r.timestamp === "string" ? r.timestamp
+                       : r.timestamp && r.timestamp.$date).getTime();
+          if (isNaN(t) || commitMeta.has(t)) continue;
+          commitMeta.set(t, {
+            sha: (c.short_sha || c.sha || "").slice(0, 7),
+            author: c.author || "",
+            message: c.message || c.subject || "",
+          });
+        }
+        // CP count per commit — aurora exposes _changePoints with
+        // global commit-idx after a render. We sort commitTimes
+        // identically so `idx` maps 1:1.
+        const cpCountByIdx = new Map();
+        for (const cp of (k._changePoints || [])) {
+          cpCountByIdx.set(cp.idx, (cpCountByIdx.get(cp.idx) || 0) + 1);
+        }
+        let ticksHtml = '<div class="slider-ticks">';
+        // Decimate when there are so many commits that every tick
+        // can't fit (>1 per 10px of track). We always keep ticks for
+        // commits with change points so the red badges stay visible.
+        const trackPx = Math.max(400, timeFilterEl.clientWidth - 32);
+        const minPx = 9;
+        const stride = Math.max(1, Math.ceil(N * minPx / trackPx));
+        for (let i = 0; i < N; i++) {
+          const hasCp = cpCountByIdx.has(i);
+          if (!hasCp && (i % stride !== 0) && i !== N - 1) continue;
+          const pct = N > 1 ? (i / (N - 1)) * 100 : 50;
+          const m = commitMeta.get(commitTimes[i]) || { sha: "", author: "", message: "" };
+          const cpN = cpCountByIdx.get(i) || 0;
+          const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
+          ticksHtml += `<div class="tick" style="left:${pct}%" title="${
+            title.replace(/"/g, "&quot;")}">`
+            + `<span class="cp-count">${cpN ? cpN : ""}</span>`
+            + `<span class="sha">${m.sha}</span>`
+            + `</div>`;
+        }
+        ticksHtml += '</div>';
         timeFilterEl.innerHTML = `
           <div class="group-title">commit range</div>
+          ${ticksHtml}
           <div class="slider-wrap">
             <input id="f-since" type="range" min="0" max="${N - 1}" step="1" value="${_sinceIdx}">
             <input id="f-until" type="range" min="0" max="${N - 1}" step="1" value="${_untilIdx}">
