@@ -243,6 +243,7 @@
                                    margin-bottom: 2px; min-height: 10px; }
     #time-filter .tick .cp-count:empty { min-height: 0; }
     #time-filter .tick:hover { color: #fff; z-index: 2; }
+    #time-filter .tick.hidden { display: none; }
     #filters .slider-wrap { position: relative; height: 28px; display: flex; align-items: center; }
     #filters .slider-wrap input[type="range"] {
       position: absolute; width: 100%; pointer-events: none;
@@ -1004,53 +1005,20 @@
         for (const cp of (k._changePoints || [])) {
           cpCountByIdx.set(cp.idx, (cpCountByIdx.get(cp.idx) || 0) + 1);
         }
-        let ticksHtml = '<div class="slider-ticks">';
-        // Place CP commits first (they're the signal), then fill the
-        // gaps with non-CP commits — but only where there's room.
-        // Any non-CP commit that would sit within minPx of a CP (or
-        // another already-placed tick) gets dropped, so CP badges
-        // never get elbowed by a neighbor's SHA.
-        const trackPx = Math.max(400, timeFilterEl.clientWidth - 32);
-        const minPx = 9;
-        const minPctSpacing = (minPx / trackPx) * 100;
+        // All N ticks exist in the DOM; visibility is toggled on
+        // mousemove. A fisheye around the pointer relaxes the min
+        // spacing so nearby commits crowd in, while far-from-pointer
+        // commits stay decimated. CP commits are always visible.
+        let ticksHtml = '<div class="slider-ticks" id="slider-ticks">';
         const pctAt = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
-        const picked = [];  // sorted array of commit indices
-        const insertSorted = (i) => {
-          let lo = 0, hi = picked.length;
-          while (lo < hi) {
-            const m = (lo + hi) >> 1;
-            if (picked[m] < i) lo = m + 1; else hi = m;
-          }
-          picked.splice(lo, 0, i);
-        };
-        // 1. CP commits: unconditional.
-        for (const i of cpCountByIdx.keys()) insertSorted(i);
-        // 2. First & last commit: anchors.
-        if (!picked.includes(0)) insertSorted(0);
-        if (!picked.includes(N - 1)) insertSorted(N - 1);
-        // 3. Fill with non-CP commits where there's room.
         for (let i = 0; i < N; i++) {
-          if (picked.includes(i)) continue;
-          const p = pctAt(i);
-          // Find neighbors in `picked` and check minPct gap.
-          let lo = 0, hi = picked.length;
-          while (lo < hi) {
-            const m = (lo + hi) >> 1;
-            if (picked[m] < i) lo = m + 1; else hi = m;
-          }
-          const left = lo > 0 ? pctAt(picked[lo - 1]) : -Infinity;
-          const right = lo < picked.length ? pctAt(picked[lo]) : Infinity;
-          if ((p - left) >= minPctSpacing && (right - p) >= minPctSpacing) {
-            picked.splice(lo, 0, i);
-          }
-        }
-        for (const i of picked) {
           const pct = pctAt(i);
           const m = commitMeta.get(commitTimes[i]) || { sha: "", author: "", message: "" };
           const cpN = cpCountByIdx.get(i) || 0;
+          const isCp = cpN > 0;
           const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
-          ticksHtml += `<div class="tick" style="left:${pct}%" title="${
-            title.replace(/"/g, "&quot;")}">`
+          ticksHtml += `<div class="tick${isCp ? ' cp' : ''}" data-idx="${i}"`
+            + ` style="left:${pct}%" title="${title.replace(/"/g, "&quot;")}">`
             + `<span class="cp-count">${cpN ? cpN : ""}</span>`
             + `<span class="sha">${m.sha}</span>`
             + `</div>`;
@@ -1098,6 +1066,94 @@
         untilEl.addEventListener("change", applyWindow);
         // Apply the default window to the already-rendered scene.
         applyWindow();
+
+        // Fisheye tick visibility. All N tick DOM nodes exist; we
+        // show a subset depending on whether the mouse is hovering
+        // the slider area and how close each tick is to the cursor.
+        const ticksEl = timeFilterEl.querySelector(".slider-ticks");
+        const cpIdxArr = [...cpCountByIdx.keys()].sort((a, b) => a - b);
+        const allTickEls = [...ticksEl.querySelectorAll(".tick")];
+        const trackPx = () => Math.max(400, timeFilterEl.clientWidth - 32);
+        const MIN_PX = 9;        // decimation target at the edges
+        const ZOOM_RADIUS = 18;  // pct; inside this the fisheye kicks in
+
+        // Mouse position along the ticks bar in percent (0..100),
+        // or null when the mouse isn't over the time-filter panel.
+        let mouseXPct = null;
+        let rafPending = false;
+
+        function recompute() {
+          rafPending = false;
+          const minPct = (MIN_PX / trackPx()) * 100;
+          const picked = new Array(N).fill(false);
+          // Always: CP commits + endpoints.
+          for (const i of cpIdxArr) picked[i] = true;
+          picked[0] = true;
+          picked[N - 1] = true;
+          // Iterate non-CP commits in priority order (near mouse first
+          // if a mouse position is set; otherwise left-to-right) and
+          // include them whenever the local min spacing is satisfied.
+          // Near the mouse, effective minPct tapers to 0 — so adjacent
+          // commits in the zoom window always fit.
+          const order = [];
+          for (let i = 0; i < N; i++) if (!picked[i]) order.push(i);
+          if (mouseXPct != null) {
+            order.sort((a, b) => Math.abs(pctAt(a) - mouseXPct) - Math.abs(pctAt(b) - mouseXPct));
+          }
+          // Sorted list of already-picked positions for gap checks.
+          const pickedIdx = [];
+          for (let i = 0; i < N; i++) if (picked[i]) pickedIdx.push(i);
+          const pickedPos = pickedIdx.map(pctAt);
+          const insertPos = (p) => {
+            let lo = 0, hi = pickedPos.length;
+            while (lo < hi) {
+              const m = (lo + hi) >> 1;
+              if (pickedPos[m] < p) lo = m + 1; else hi = m;
+            }
+            pickedPos.splice(lo, 0, p);
+          };
+          for (const i of order) {
+            const p = pctAt(i);
+            // Local min spacing: within ZOOM_RADIUS of mouse it
+            // tapers linearly to 0 so near-cursor commits all fit.
+            const dist = mouseXPct != null ? Math.abs(p - mouseXPct) : Infinity;
+            const localMin = mouseXPct != null
+              ? minPct * Math.min(1, dist / ZOOM_RADIUS)
+              : minPct;
+            let lo = 0, hi = pickedPos.length;
+            while (lo < hi) {
+              const m = (lo + hi) >> 1;
+              if (pickedPos[m] < p) lo = m + 1; else hi = m;
+            }
+            const left = lo > 0 ? pickedPos[lo - 1] : -Infinity;
+            const right = lo < pickedPos.length ? pickedPos[lo] : Infinity;
+            if ((p - left) >= localMin && (right - p) >= localMin) {
+              picked[i] = true;
+              pickedPos.splice(lo, 0, p);
+            }
+          }
+          for (let i = 0; i < N; i++) {
+            allTickEls[i].classList.toggle("hidden", !picked[i]);
+          }
+        }
+        function requestRecompute() {
+          if (rafPending) return;
+          rafPending = true;
+          requestAnimationFrame(recompute);
+        }
+
+        timeFilterEl.addEventListener("mousemove", (e) => {
+          const rect = ticksEl.getBoundingClientRect();
+          const pct = ((e.clientX - rect.left) / rect.width) * 100;
+          mouseXPct = Math.max(0, Math.min(100, pct));
+          requestRecompute();
+        });
+        timeFilterEl.addEventListener("mouseleave", () => {
+          mouseXPct = null;
+          requestRecompute();
+        });
+        window.addEventListener("resize", requestRecompute);
+        recompute();
       }
     }
 
