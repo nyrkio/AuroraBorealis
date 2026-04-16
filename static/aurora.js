@@ -1329,9 +1329,9 @@ export class Aurora {
     for (const line of this._seriesLines) easeLine(line);
     for (const line of this._cpBeforeLines) easeLine(line);
     this.camController.update();
-    // Lock the starfield fully to the camera (position + orientation),
-    // so it stays exactly fixed on screen regardless of camera motion.
-    // Trying this vs. position-only pinning to see which reads better.
+    // Lock the starfield fully to the camera (position + orientation)
+    // so the sky stays screen-fixed. Makes the user feel in control of
+    // the data rather than a passenger on a moving universe.
     if (this._stars) {
       this._stars.position.copy(this.camera.position);
       this._stars.quaternion.copy(this.camera.quaternion);
