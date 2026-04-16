@@ -575,11 +575,16 @@ export class Aurora {
       for (const t of s.times) { if (t < tMin) tMin = t; if (t > tMax) tMax = t; }
     }
 
-    // Primary window occupies positive X [0, axisX]; its right edge is the newest data.
+    // Primary window: time range the user is currently focused on.
+    // Primary-window commits land in positive X [0, axisX]; older
+    // commits extend into negative X as a fading tail. The window
+    // defaults to the last `primaryDays` but can be set externally
+    // via setPrimaryWindow (driven by the time-range slider).
     const DAY_MS = 86400 * 1000;
-    const primarySpan = this.primaryDays * DAY_MS;
-    const primaryEnd = tMax;
-    const primaryStart = primaryEnd - primarySpan;
+    const defaultPrimaryStart = tMax - this.primaryDays * DAY_MS;
+    const primaryEnd = this._primaryUntil ?? tMax;
+    const primaryStart = this._primarySince ?? defaultPrimaryStart;
+    const primarySpan = Math.max(1, primaryEnd - primaryStart);
     // Anything older than primaryStart fades into negative X.
     const pastSpan = Math.max(1, primaryStart - tMin);
 
@@ -621,17 +626,32 @@ export class Aurora {
     for (const run of runs) allTimesSet.add(new Date(_tsOf(run)).getTime());
     const commitTimes = [...allTimesSet].sort((a, b) => a - b);
     const nCommits = commitTimes.length;
-    const xSpacingNatural = nCommits > 1 ? this.axisX / (nCommits - 1) : this.axisX;
+
+    // Split commits into primary (inside [primaryStart, primaryEnd])
+    // and tail (older than primaryStart). X spacing is sized for the
+    // primary set so it always fills [0, axisX]; the tail uses the
+    // same step but laid out into negative X (newest tail nearest 0).
+    const primaryTimes = commitTimes.filter(t => t >= primaryStart && t <= primaryEnd);
+    const tailTimes = commitTimes.filter(t => t < primaryStart);
+    const nPrimary = primaryTimes.length;
+    const xSpacingNatural = nPrimary > 1
+      ? this.axisX / (nPrimary - 1)
+      : (nCommits > 1 ? this.axisX / (nCommits - 1) : this.axisX);
     const markerSize = Math.min(0.010, Math.min(zStep, xSpacingNatural) * 0.45);
 
-    // X mapping is ordinal. Spacing bounded above at 50 × markerSize
-    // so sparse datasets still cluster (not stretched across the whole
-    // axis) but can breathe — with a handful of commits the old 10×
-    // bound packed them together uncomfortably. Dense data uses
-    // natural spacing. Oldest commit anchors at x = 0, newest at
-    // (N-1) × xStep — data grows rightward.
+    // X mapping: primary-window commits span [0, axisX] ordinally,
+    // older commits extend into negative X as a fading tail.
+    // Spacing bounded above at 50 × markerSize so sparse primary
+    // windows cluster (not stretched across the whole axis) but can
+    // still breathe.
     const xStep = Math.min(xSpacingNatural, markerSize * 50);
-    const xByTs = new Map(commitTimes.map((t, i) => [t, i * xStep]));
+    const xByTs = new Map();
+    primaryTimes.forEach((t, i) => xByTs.set(t, i * xStep));
+    // Tail laid out backwards from the primary's left edge — newest
+    // tail commit at -xStep, oldest further out. We use half-step on
+    // the tail so it compresses slightly and reads as receding past.
+    const tailStep = xStep * 0.7;
+    [...tailTimes].reverse().forEach((t, i) => xByTs.set(t, -(i + 1) * tailStep));
     const globalIdxByTs = new Map(commitTimes.map((t, i) => [t, i]));
 
     // Enlargement caps. A hovered / column / CP marker must never draw
@@ -656,10 +676,12 @@ export class Aurora {
     // camera by the same delta so the user keeps their relative pose
     // but the orbit now pivots on what they're looking at. We only do
     // this once; filter changes keep the user's view.
-    if (!this._didInitialCenter && nCommits > 0) {
+    if (!this._didInitialCenter && nPrimary > 0) {
       this._didInitialCenter = true;
-      // Data spans [0, (N-1) × xStep]; orbit pivot at its midpoint.
-      const cx = (nCommits - 1) * xStep / 2;
+      // Pivot on the primary window's midpoint, not the full data —
+      // the tail into negative X should feel like it recedes past the
+      // frame, not drag the camera back with it.
+      const cx = (nPrimary - 1) * xStep / 2;
       const newTarget = new THREE.Vector3(cx, this.axisY / 2, this.axisZ / 2);
       const controls = this.camController.controls;
       const delta = newTarget.clone().sub(controls.target);
@@ -1357,6 +1379,18 @@ export class Aurora {
   setPage(pageStart) {
     if (!this._lastRuns) return;
     this.render(this._lastRuns, { pageStart });
+  }
+
+  // Set the visible time window. Commits inside [sinceMs, untilMs]
+  // get positive-X ordinal spacing; older commits form a tail into
+  // negative X. Pass `null` for either bound to unset it.
+  setPrimaryWindow(sinceMs, untilMs) {
+    this._primarySince = sinceMs;
+    this._primaryUntil = untilMs;
+    // Recentering is tied to the primary window, so allow it to
+    // re-fit when the window meaningfully changes.
+    this._didInitialCenter = false;
+    if (this._lastRuns) this.render(this._lastRuns);
   }
 
   async fetchAndRender(url) {
