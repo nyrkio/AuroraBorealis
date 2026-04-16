@@ -338,7 +338,14 @@ export class Aurora {
       // a click. Camera movement never affects lock state.
       const moved = Math.hypot(e.clientX - s.x, e.clientY - s.y);
       if (moved > 4) return;
-      if (s.button === 0) this._onPointerClick();
+      if (s.button === 0) {
+        // On touch devices no pointermove fires before tap, so the
+        // hover state is stale (null). Run the hover pick once with
+        // the release coordinates so `_onPointerClick` sees the
+        // mesh the user actually tapped.
+        if (e.pointerType === "touch") this._onPointerMove(e);
+        this._onPointerClick();
+      }
     });
 
     // Resize handling.
