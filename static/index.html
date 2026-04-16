@@ -1151,7 +1151,18 @@
         timeFilterEl.addEventListener("mouseleave", () => {
           mouseXPct = null;
           requestRecompute();
+          // Clear the 3D cursor when the mouse leaves the slider bar,
+          // mirroring what happens when it leaves the scene.
+          k.clearHover();
         });
+        // Hovering a tick drives the 3D cursor just like hovering a
+        // data point. Clicking locks that commit (replaces any
+        // existing lock).
+        for (const el of allTickEls) {
+          const idx = +el.dataset.idx;
+          el.addEventListener("mouseenter", () => k.hoverCommitByIdx(idx));
+          el.addEventListener("click", () => k.lockCommitByIdx(idx));
+        }
         window.addEventListener("resize", requestRecompute);
         recompute();
       }

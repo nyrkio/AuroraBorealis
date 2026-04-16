@@ -1381,6 +1381,33 @@ export class Aurora {
     this.render(this._lastRuns, { pageStart });
   }
 
+  // Public hooks for UI elements (like the commit-tick bar on the
+  // slider) to drive the same hover / lock behavior we already have
+  // for pointer interaction inside the 3D scene.
+  hoverCommitByIdx(idx) {
+    const col = this._byIdx.get(idx);
+    if (!col || !col.length) return false;
+    this._updateTimeCursor(col[0]);
+    this.narrator.emit({ type: "point_hovered", point: col[0].userData });
+    return true;
+  }
+  clearHover() {
+    this._updateTimeCursor(null);
+  }
+  lockCommitByIdx(idx) {
+    const col = this._byIdx.get(idx);
+    if (!col || !col.length) return false;
+    // Prefer the change-point mesh in the column so the right-hand
+    // info box leads with the most interesting row, falling back to
+    // any representative mesh.
+    const cp = col.find(m => m.userData.isChangePoint) || col[0];
+    if (this._flyState === "playing" || this._flyState === "countdown") {
+      this.pauseFlyover();
+    }
+    this._enterLock(cp);
+    return true;
+  }
+
   // Set the visible time window. Commits inside [sinceMs, untilMs]
   // get positive-X ordinal spacing; older commits form a tail into
   // negative X. Pass `null` for either bound to unset it.
