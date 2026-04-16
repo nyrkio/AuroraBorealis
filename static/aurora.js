@@ -1009,6 +1009,11 @@ export class Aurora {
     }
     this._flyList = stops;
     this._flyIdx = 0;
+    this._startCountdown();
+  }
+
+  _startCountdown() {
+    this._cancelFlyoverTimers();
     this._flyState = "countdown";
     this._flyCountdown = 10;
     this._emitFlyover();
@@ -1073,8 +1078,13 @@ export class Aurora {
 
   _playFlyStep() {
     if (this._flyIdx >= this._flyList.length) {
-      this._flyState = "done";
-      this._emitFlyover();
+      // End of tour — rewind to stop 0 (the overview pose) and start
+      // a fresh countdown so the tour loops indefinitely. Honours
+      // requestAnimationFrame's throttling when the tab is
+      // backgrounded, so a hidden tab won't burn CPU looping.
+      this._flyIdx = 0;
+      this._goToCp(0);
+      this._startCountdown();
       return;
     }
     this._goToCp(this._flyIdx);
