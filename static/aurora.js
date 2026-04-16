@@ -434,8 +434,7 @@ export class Aurora {
       col[i * 3 + 0] = rC * b;
       col[i * 3 + 1] = gC * b;
       col[i * 3 + 2] = bC * b;
-      // Occasional "galaxy" is noticeably bigger and fuzzier.
-      sizes[i] = Math.random() < 0.04 ? rand(0.45, 0.75) : rand(0.12, 0.25);
+      sizes[i] = rand(0.12, 0.25);
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
@@ -1330,6 +1329,10 @@ export class Aurora {
     for (const line of this._seriesLines) easeLine(line);
     for (const line of this._cpBeforeLines) easeLine(line);
     this.camController.update();
+    // Keep the starfield pinned to the camera so stars behave like an
+    // infinitely-distant skybox — the camera rotates "within" space, it
+    // doesn't drag space along when it pans or zooms.
+    if (this._stars) this._stars.position.copy(this.camera.position);
     this.renderer.render(this.scene, this.camera);
     requestAnimationFrame(this._animate);
   }
