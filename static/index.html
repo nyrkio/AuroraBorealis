@@ -848,12 +848,6 @@
     // empty, and the whole control disappears just when the user
     // wants to switch back.
     let _filtersRendered = false;
-    // The time-range slider drives `k.setPrimaryWindow` — it's not a
-    // server filter, so these live on the client and survive reloads
-    // triggered by other facet selections.
-    let _primaryWindowInitialized = false;
-    let _currentSince = null;
-    let _currentUntil = null;
     function renderFilters(facetsData) {
       timeFilterEl.innerHTML = "";
       const span = facetsData.timestamp_span;
@@ -906,74 +900,9 @@
             || (!filters[dim] && input.value === "");
         });
       }
-      timeFilterEl.style.display = span ? "block" : "none";
-
-      // Time range slider. Ends span the full dataset; the handles
-      // carve out the "primary window" — commits inside are placed
-      // in positive X, older commits trail into negative X. The
-      // slider drives the 3D view directly (no server round-trip).
-      if (span) {
-        const minMs = extractTs(span.min);
-        const maxMs = extractTs(span.max);
-        const day = 86400 * 1000;
-        const lo = Math.floor(minMs / day) * day;
-        const hi = Math.ceil(maxMs / day) * day;
-        // Default primary window: min(3 months, last 300 commits).
-        // We don't know per-commit times yet here, so use the 3-month
-        // bound; the 300-point tightening (if ever narrower) applies
-        // after the runs fetch completes.
-        const defaultSince = _primaryWindowInitialized
-          ? (_currentSince != null ? _currentSince : lo)
-          : Math.max(lo, hi - 90 * day);
-        const sinceMs = defaultSince;
-        const untilMs = _primaryWindowInitialized && _currentUntil != null ? _currentUntil : hi;
-        timeFilterEl.innerHTML = `
-          <div class="group-title">time range</div>
-          <div class="slider-wrap">
-            <input id="f-since" type="range" min="${lo}" max="${hi}" step="${day}" value="${sinceMs}">
-            <input id="f-until" type="range" min="${lo}" max="${hi}" step="${day}" value="${untilMs}">
-          </div>
-          <div class="slider-labels">
-            <span id="f-since-label">${fmtDay(sinceMs)}</span>
-            <span id="f-until-label">${fmtDay(untilMs)}</span>
-          </div>
-        `;
-        const sinceEl = timeFilterEl.querySelector("#f-since");
-        const untilEl = timeFilterEl.querySelector("#f-until");
-        const sinceLab = timeFilterEl.querySelector("#f-since-label");
-        const untilLab = timeFilterEl.querySelector("#f-until-label");
-        const update = () => {
-          let s = +sinceEl.value, u = +untilEl.value;
-          if (s > u) {
-            // Keep the handles from crossing: snap the other side.
-            if (document.activeElement === sinceEl) untilEl.value = s;
-            else sinceEl.value = u;
-            s = +sinceEl.value; u = +untilEl.value;
-          }
-          sinceLab.textContent = fmtDay(s);
-          untilLab.textContent = fmtDay(u);
-        };
-        const applyWindow = () => {
-          const s = +sinceEl.value, u = +untilEl.value;
-          _currentSince = (s > lo) ? s : null;
-          _currentUntil = (u < hi) ? u : null;
-          k.setPrimaryWindow(_currentSince, _currentUntil);
-        };
-        sinceEl.addEventListener("input", update);
-        untilEl.addEventListener("input", update);
-        sinceEl.addEventListener("change", applyWindow);
-        untilEl.addEventListener("change", applyWindow);
-        // First time only: push the computed default into the 3D view
-        // so the first render lands with the tail behind the primary
-        // window (rather than briefly showing the whole dataset in
-        // positive X and then re-rendering).
-        if (!_primaryWindowInitialized) {
-          _primaryWindowInitialized = true;
-          _currentSince = (sinceMs > lo) ? sinceMs : null;
-          _currentUntil = (untilMs < hi) ? untilMs : null;
-          k.setPrimaryWindow(_currentSince, _currentUntil);
-        }
-      }
+      // The time-range slider is commit-indexed, not timestamp-based —
+      // it gets set up after runs arrive (see setupTimeSlider), since
+      // facets only gives us a span, not the individual commit times.
     }
 
     async function reload() {
@@ -984,20 +913,22 @@
         const facetsData = await fr.json();
         renderFilters(facetsData);
         await k.fetchAndRender(testsBase + buildQs(filters));
-        maybeTightenPrimaryToLast300();
+        setupTimeSlider();
       } catch (e) {
         status.textContent = "error: " + e.message;
       }
     }
 
-    // Tighten the primary window to the last 300 commits when that's
-    // narrower than the current (date-based) default. Can only run
-    // once runs data is in hand. Idempotent after the user moves the
-    // slider — _currentSince is then user-owned, so we leave it.
-    let _point300Checked = false;
-    function maybeTightenPrimaryToLast300() {
-      if (_point300Checked) return;
-      _point300Checked = true;
+    // Commit-indexed time range slider. The slider's min/max are
+    // commit ordinals (0 .. N-1), so every commit occupies an equal
+    // slot regardless of how close in wall-clock time its neighbors
+    // are — same spacing as the X axis. Labels show the commit's
+    // date for readability. Built once on first render; on later
+    // reloads we just keep the existing DOM.
+    let _timeSliderBuilt = false;
+    let _sinceIdx = null;
+    let _untilIdx = null;
+    function setupTimeSlider() {
       const runs = k._lastRuns;
       if (!runs || runs.length === 0) return;
       const uniq = new Set();
@@ -1009,19 +940,67 @@
                      : r.timestamp && r.timestamp.$date).getTime();
         if (!isNaN(t)) uniq.add(t);
       }
-      const sorted = [...uniq].sort((a, b) => a - b);
-      if (sorted.length <= 300) return;
-      const point300Ms = sorted[sorted.length - 300];
-      const currentSince = _currentSince ?? sorted[0];
-      if (point300Ms <= currentSince) return;  // 90-day bound already narrower
-      _currentSince = point300Ms;
-      const sinceEl = document.querySelector("#f-since");
-      if (sinceEl) {
-        sinceEl.value = point300Ms;
-        const sinceLab = document.querySelector("#f-since-label");
-        if (sinceLab) sinceLab.textContent = fmtDay(point300Ms);
+      const commitTimes = [...uniq].sort((a, b) => a - b);
+      const N = commitTimes.length;
+      if (N < 2) return;
+
+      // Default primary = min(3 months, last 300 commits) — whichever
+      // gives fewer commits in the window (tighter range).
+      const hi = commitTimes[N - 1];
+      const threeMonthsAgo = hi - 90 * 86400 * 1000;
+      let threeMonthsIdx = 0;
+      while (threeMonthsIdx < N && commitTimes[threeMonthsIdx] < threeMonthsAgo) threeMonthsIdx++;
+      const pointCapIdx = Math.max(0, N - 300);
+      const defaultSinceIdx = Math.max(threeMonthsIdx, pointCapIdx);
+
+      if (!_timeSliderBuilt) {
+        _timeSliderBuilt = true;
+        _sinceIdx = defaultSinceIdx;
+        _untilIdx = N - 1;
+        timeFilterEl.style.display = "block";
+        timeFilterEl.innerHTML = `
+          <div class="group-title">commit range</div>
+          <div class="slider-wrap">
+            <input id="f-since" type="range" min="0" max="${N - 1}" step="1" value="${_sinceIdx}">
+            <input id="f-until" type="range" min="0" max="${N - 1}" step="1" value="${_untilIdx}">
+          </div>
+          <div class="slider-labels">
+            <span id="f-since-label">${fmtDay(commitTimes[_sinceIdx])}</span>
+            <span id="f-until-label">${fmtDay(commitTimes[_untilIdx])}</span>
+          </div>
+        `;
+        const sinceEl = timeFilterEl.querySelector("#f-since");
+        const untilEl = timeFilterEl.querySelector("#f-until");
+        const sinceLab = timeFilterEl.querySelector("#f-since-label");
+        const untilLab = timeFilterEl.querySelector("#f-until-label");
+        const update = () => {
+          let s = +sinceEl.value, u = +untilEl.value;
+          if (s > u) {
+            if (document.activeElement === sinceEl) untilEl.value = s;
+            else sinceEl.value = u;
+            s = +sinceEl.value; u = +untilEl.value;
+          }
+          sinceLab.textContent = fmtDay(commitTimes[s]);
+          untilLab.textContent = fmtDay(commitTimes[u]);
+        };
+        const applyWindow = () => {
+          _sinceIdx = +sinceEl.value;
+          _untilIdx = +untilEl.value;
+          // Pad the window by half a commit-interval on each side so
+          // boundary commits (which sit exactly on sinceIdx/untilIdx)
+          // aren't pushed off by rounding.
+          const pad = Math.max(1, commitTimes[1] - commitTimes[0]) / 2;
+          const sinceMs = (_sinceIdx > 0) ? commitTimes[_sinceIdx] - pad : null;
+          const untilMs = (_untilIdx < N - 1) ? commitTimes[_untilIdx] + pad : null;
+          k.setPrimaryWindow(sinceMs, untilMs);
+        };
+        sinceEl.addEventListener("input", update);
+        untilEl.addEventListener("input", update);
+        sinceEl.addEventListener("change", applyWindow);
+        untilEl.addEventListener("change", applyWindow);
+        // Apply the default window to the already-rendered scene.
+        applyWindow();
       }
-      k.setPrimaryWindow(_currentSince, _currentUntil);
     }
 
     // Skip initial data load when landing overlay is up — the user
