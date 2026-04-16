@@ -407,7 +407,7 @@ export class Aurora {
   // a large sphere (radius well outside the data band) so parallax is
   // minimal and they stay out of the way when the user orbits close.
   _addStarfield() {
-    const N = 420;
+    const N = 900;
     const pos = new Float32Array(N * 3);
     const col = new Float32Array(N * 3);
     const sizes = new Float32Array(N);
@@ -417,7 +417,7 @@ export class Aurora {
       // on one shell.
       const u = Math.random() * 2 - 1;
       const phi = Math.random() * Math.PI * 2;
-      const r = rand(22, 42);
+      const r = rand(18, 40);
       const s = Math.sqrt(1 - u * u);
       pos[i * 3 + 0] = r * s * Math.cos(phi);
       pos[i * 3 + 1] = r * u;
@@ -426,16 +426,16 @@ export class Aurora {
       // warm rose so the field reads as a real sky, not a grid of dots.
       const tint = Math.random();
       let rC, gC, bC;
-      if (tint < 0.7) { rC = 1.0; gC = 1.0; bC = 1.0; }
-      else if (tint < 0.9) { rC = 0.75; gC = 0.85; bC = 1.0; }
-      else { rC = 1.0; gC = 0.82; bC = 0.88; }
-      // Brightness varies too — most dim, a few bright.
-      const b = Math.random() < 0.93 ? rand(0.25, 0.55) : rand(0.7, 1.0);
+      if (tint < 0.65) { rC = 1.0; gC = 1.0; bC = 1.0; }
+      else if (tint < 0.85) { rC = 0.72; gC = 0.85; bC = 1.0; }
+      else { rC = 1.0; gC = 0.78; bC = 0.86; }
+      // Brightness: bimodal — mostly mid, some bright so a few stand out.
+      const b = Math.random() < 0.85 ? rand(0.55, 0.9) : rand(1.0, 1.4);
       col[i * 3 + 0] = rC * b;
       col[i * 3 + 1] = gC * b;
       col[i * 3 + 2] = bC * b;
-      // Occasional "galaxy" is a bit bigger.
-      sizes[i] = Math.random() < 0.03 ? rand(0.22, 0.35) : rand(0.05, 0.12);
+      // Occasional "galaxy" is noticeably bigger and fuzzier.
+      sizes[i] = Math.random() < 0.04 ? rand(0.45, 0.75) : rand(0.12, 0.25);
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
@@ -452,7 +452,7 @@ export class Aurora {
         void main() {
           vCol = color;
           vec4 mv = modelViewMatrix * vec4(position, 1.0);
-          gl_PointSize = size * (600.0 / -mv.z);
+          gl_PointSize = size * (900.0 / -mv.z);
           gl_Position = projectionMatrix * mv;
         }
       `,
