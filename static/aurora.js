@@ -1329,10 +1329,13 @@ export class Aurora {
     for (const line of this._seriesLines) easeLine(line);
     for (const line of this._cpBeforeLines) easeLine(line);
     this.camController.update();
-    // Keep the starfield pinned to the camera so stars behave like an
-    // infinitely-distant skybox — the camera rotates "within" space, it
-    // doesn't drag space along when it pans or zooms.
-    if (this._stars) this._stars.position.copy(this.camera.position);
+    // Lock the starfield fully to the camera (position + orientation),
+    // so it stays exactly fixed on screen regardless of camera motion.
+    // Trying this vs. position-only pinning to see which reads better.
+    if (this._stars) {
+      this._stars.position.copy(this.camera.position);
+      this._stars.quaternion.copy(this.camera.quaternion);
+    }
     this.renderer.render(this.scene, this.camera);
     requestAnimationFrame(this._animate);
   }
