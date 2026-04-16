@@ -1005,16 +1005,47 @@
           cpCountByIdx.set(cp.idx, (cpCountByIdx.get(cp.idx) || 0) + 1);
         }
         let ticksHtml = '<div class="slider-ticks">';
-        // Decimate when there are so many commits that every tick
-        // can't fit (>1 per 10px of track). We always keep ticks for
-        // commits with change points so the red badges stay visible.
+        // Place CP commits first (they're the signal), then fill the
+        // gaps with non-CP commits — but only where there's room.
+        // Any non-CP commit that would sit within minPx of a CP (or
+        // another already-placed tick) gets dropped, so CP badges
+        // never get elbowed by a neighbor's SHA.
         const trackPx = Math.max(400, timeFilterEl.clientWidth - 32);
         const minPx = 9;
-        const stride = Math.max(1, Math.ceil(N * minPx / trackPx));
+        const minPctSpacing = (minPx / trackPx) * 100;
+        const pctAt = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
+        const picked = [];  // sorted array of commit indices
+        const insertSorted = (i) => {
+          let lo = 0, hi = picked.length;
+          while (lo < hi) {
+            const m = (lo + hi) >> 1;
+            if (picked[m] < i) lo = m + 1; else hi = m;
+          }
+          picked.splice(lo, 0, i);
+        };
+        // 1. CP commits: unconditional.
+        for (const i of cpCountByIdx.keys()) insertSorted(i);
+        // 2. First & last commit: anchors.
+        if (!picked.includes(0)) insertSorted(0);
+        if (!picked.includes(N - 1)) insertSorted(N - 1);
+        // 3. Fill with non-CP commits where there's room.
         for (let i = 0; i < N; i++) {
-          const hasCp = cpCountByIdx.has(i);
-          if (!hasCp && (i % stride !== 0) && i !== N - 1) continue;
-          const pct = N > 1 ? (i / (N - 1)) * 100 : 50;
+          if (picked.includes(i)) continue;
+          const p = pctAt(i);
+          // Find neighbors in `picked` and check minPct gap.
+          let lo = 0, hi = picked.length;
+          while (lo < hi) {
+            const m = (lo + hi) >> 1;
+            if (picked[m] < i) lo = m + 1; else hi = m;
+          }
+          const left = lo > 0 ? pctAt(picked[lo - 1]) : -Infinity;
+          const right = lo < picked.length ? pctAt(picked[lo]) : Infinity;
+          if ((p - left) >= minPctSpacing && (right - p) >= minPctSpacing) {
+            picked.splice(lo, 0, i);
+          }
+        }
+        for (const i of picked) {
+          const pct = pctAt(i);
           const m = commitMeta.get(commitTimes[i]) || { sha: "", author: "", message: "" };
           const cpN = cpCountByIdx.get(i) || 0;
           const title = [m.sha, m.author, m.message].filter(Boolean).join(" · ");
