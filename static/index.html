@@ -3,7 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <title>Aurora Borealis</title>
+  <title>Nyrkiö · change detection</title>
+  <link rel="icon" type="image/png" href="nyrkio-moon.png" />
   <style>
     html, body { margin: 0; padding: 0; height: 100%; background: #0b0d12; color: #cdd; font-family: sans-serif; overflow: hidden; }
     #graph { position: absolute; inset: 0; }
@@ -17,6 +18,9 @@
       white-space: nowrap;
     }
     #status-panel strong { margin-right: 8px; }
+    #brand-logo { height: 20px; width: 20px; vertical-align: -5px;
+      margin-right: 6px; opacity: 0.9; }
+    #status-panel .muted { color: #9ab; opacity: 0.8; }
     #hint-toggle { cursor: help; margin-left: 10px;
       color: #78c8ff;
       border: 1px solid #78c8ff; border-radius: 50%;
@@ -324,7 +328,8 @@
   </div>
   <div id="mobile-backdrop"></div>
   <div id="status-panel">
-    <strong>Aurora Borealis</strong><span id="status" style="opacity:0.85;"></span>
+    <img id="brand-logo" src="nyrkio-moon.png" alt="Nyrkiö" />
+    <strong>Nyrkiö</strong><span class="muted">· change detection</span><span id="status" style="opacity:0.85; margin-left:8px;"></span>
     <span id="hint-toggle" title="click for help">?</span>
   </div>
   <div id="hint-popover">
@@ -353,7 +358,9 @@
 
   <div id="landing" style="display: none">
     <div class="card">
-      <h1>Nyrkiö</h1>
+      <h1><img src="nyrkio-moon.png" alt=""
+          style="height:28px; width:28px; vertical-align:-7px; margin-right:10px;" />Nyrkiö
+        <span style="color:#9ab; font-weight:400; font-size:16px;">· change detection</span></h1>
       <p class="tag">Point us at a repo. We read your existing benchmark and
         unit-test output from GitHub Actions — no code changes on your side.
         A couple of minutes later you'll see whether recent commits introduced

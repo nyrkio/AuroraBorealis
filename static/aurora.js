@@ -265,6 +265,7 @@ export class Aurora {
     this.scene.add(k2);
 
     this._addAxes();
+    this._addStarfield();
 
     this.pointsGroup = new THREE.Group();
     this.scene.add(this.pointsGroup);
@@ -400,6 +401,81 @@ export class Aurora {
       sprite.position.set(...pos);
       this.scene.add(sprite);
     }
+  }
+
+  // Very light sprinkle of stars/galaxies in the far background. Sits on
+  // a large sphere (radius well outside the data band) so parallax is
+  // minimal and they stay out of the way when the user orbits close.
+  _addStarfield() {
+    const N = 420;
+    const pos = new Float32Array(N * 3);
+    const col = new Float32Array(N * 3);
+    const sizes = new Float32Array(N);
+    const rand = (a, b) => a + Math.random() * (b - a);
+    for (let i = 0; i < N; i++) {
+      // Uniform point on a sphere, radius jittered so they don't all sit
+      // on one shell.
+      const u = Math.random() * 2 - 1;
+      const phi = Math.random() * Math.PI * 2;
+      const r = rand(22, 42);
+      const s = Math.sqrt(1 - u * u);
+      pos[i * 3 + 0] = r * s * Math.cos(phi);
+      pos[i * 3 + 1] = r * u;
+      pos[i * 3 + 2] = r * s * Math.sin(phi);
+      // Most stars neutral white; a small fraction leans cool blue or
+      // warm rose so the field reads as a real sky, not a grid of dots.
+      const tint = Math.random();
+      let rC, gC, bC;
+      if (tint < 0.7) { rC = 1.0; gC = 1.0; bC = 1.0; }
+      else if (tint < 0.9) { rC = 0.75; gC = 0.85; bC = 1.0; }
+      else { rC = 1.0; gC = 0.82; bC = 0.88; }
+      // Brightness varies too — most dim, a few bright.
+      const b = Math.random() < 0.93 ? rand(0.25, 0.55) : rand(0.7, 1.0);
+      col[i * 3 + 0] = rC * b;
+      col[i * 3 + 1] = gC * b;
+      col[i * 3 + 2] = bC * b;
+      // Occasional "galaxy" is a bit bigger.
+      sizes[i] = Math.random() < 0.03 ? rand(0.22, 0.35) : rand(0.05, 0.12);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    geo.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+    geo.setAttribute("size", new THREE.Float32BufferAttribute(sizes, 1));
+
+    // Custom shader — PointsMaterial's `size` is global, but we want
+    // per-star sizes so a few "galaxies" can stand out.
+    const mat = new THREE.ShaderMaterial({
+      uniforms: {},
+      vertexShader: `
+        attribute float size;
+        varying vec3 vCol;
+        void main() {
+          vCol = color;
+          vec4 mv = modelViewMatrix * vec4(position, 1.0);
+          gl_PointSize = size * (600.0 / -mv.z);
+          gl_Position = projectionMatrix * mv;
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vCol;
+        void main() {
+          // Round soft-edged points; alpha falls off from centre so
+          // stars don't look like pixelated squares.
+          vec2 d = gl_PointCoord - vec2(0.5);
+          float r = length(d);
+          if (r > 0.5) discard;
+          float a = smoothstep(0.5, 0.15, r);
+          gl_FragColor = vec4(vCol, a * 0.8);
+        }
+      `,
+      vertexColors: true,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    this._stars = new THREE.Points(geo, mat);
+    this._stars.renderOrder = -1;  // draw before data points
+    this.scene.add(this._stars);
   }
 
   _makeLabel(text) {
