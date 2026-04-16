@@ -384,7 +384,7 @@
         <div class="dash-grid" id="dash-grid"></div>
       </div>
       <div class="footer">
-        <a href="?repo=gh/demo/bench" style="color:#78c8ff;">demo data</a>
+        <a href="?repo=demo/bench" style="color:#78c8ff;">demo data</a>
         <a href="https://blog.nyrkio.com" target="_blank" rel="noopener">Blog</a>
         <a href="https://docs.nyrkio.com" target="_blank" rel="noopener">Docs</a>
         <a href="https://github.com/nyrkio" target="_blank" rel="noopener">GitHub</a>
@@ -678,7 +678,8 @@
           const short = ab.replace(/^gh\//, "");
           const a = document.createElement("a");
           a.className = "dash-card";
-          a.href = `?repo=${encodeURIComponent(ab)}&metric=real_time`;
+          // Github is the default; strip the vendor prefix from the URL.
+          a.href = `?repo=${encodeURIComponent(short)}&metric=real_time`;
           const runCount = d.run_count || 0;
           const latest = d.latest && (d.latest.$date || d.latest);
           const latestDay = latest ? new Date(latest).toISOString().slice(0, 10) : "?";
@@ -709,6 +710,7 @@
           }
           statusEl.textContent = "Ingesting — polling for data (up to ~90s)…";
           // Poll the list endpoint; redirect once any runs show up.
+          // API path keeps the `gh/` prefix; user-facing URL doesn't.
           const testsUrl = `/api/v3/tests/gh/${repo}?metric=real_time`;
           const t0 = Date.now();
           while (Date.now() - t0 < 90_000) {
@@ -717,7 +719,7 @@
             if (tr.ok) {
               const d = await tr.json();
               if (d.length > 0) {
-                location.search = `?repo=gh/${repo}&metric=real_time`;
+                location.search = `?repo=${repo}&metric=real_time`;
                 return;
               }
             }
@@ -733,10 +735,25 @@
 
     // ---- filters bar (facets + time slider) ----------------------------
 
-    let repoRaw = urlParams.get("repo") || "gh/demo/bench";
+    // `?repo=owner/name` is the canonical form — github is assumed
+    // because it's the only git vendor wired up. An optional leading
+    // vendor segment (`gh/`, `gl/`) is still accepted so old pasted
+    // URLs keep working and the scheme extends cleanly if we ever
+    // add a second vendor.
+    let repoRaw = urlParams.get("repo") || "demo/bench";
     repoRaw = repoRaw.replace(/^\/?api\/v3\/tests\//, "");
-    const [repoPath, extraQs] = repoRaw.split("?");
+    const [repoInput, extraQs] = repoRaw.split("?");
     const extraParams = new URLSearchParams(extraQs || "");
+    const _segs = repoInput.split("/").filter(Boolean);
+    let _vendor = "gh";
+    let _ownerRepo;
+    if (_segs.length >= 3 && /^g[hl]$/.test(_segs[0])) {
+      _vendor = _segs[0];
+      _ownerRepo = _segs.slice(1).join("/");
+    } else {
+      _ownerRepo = _segs.join("/");
+    }
+    const repoPath = `${_vendor}/${_ownerRepo}`;
     const testsBase = `/api/v3/tests/${repoPath}`;
     const facetsBase = `${testsBase}/facets`;
 
