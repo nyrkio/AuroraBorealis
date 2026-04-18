@@ -145,19 +145,28 @@ def _seed_demo(app):
             if d == outlier_day:
                 val = baseline * outlier_mult if outlier_mult > 0 else baseline * 0.01
             commit = commits[d]
-            # v2-style `commit` sub-document at top level. The legacy v1
-            # fields (`git_commit`, `branch`) are still present because
-            # the rest of the stack hasn't migrated yet.
+            # Canonical benchzoo-shape run: nothing flattened, every
+            # field in its semantic home. ``commit.commit_time`` is
+            # the authoritative ordering signal (no top-level
+            # ``timestamp`` — that's a test-execution concept the demo
+            # doesn't model).
             runs.insert_one(Document(
                 absolute_name="gh/demo/bench",
-                branch="main",
-                git_commit=commit["sha"],
-                timestamp=ts,
-                attributes={"test_name": plan["test_name"]},
+                test={"test_name": plan["test_name"]},
+                run={"passed": True},
+                env={"framework": {"name": "demo"}},
                 metrics=[{"name": plan["metric"], "unit": plan["unit"],
                           "direction": plan["direction"], "value": val}],
-                commit=commit,
-                passed=True,
+                commit={
+                    "sha":         commit["sha"],
+                    "short_sha":   commit["short_sha"],
+                    "ref":         commit["ref"],
+                    "commit_time": commit["commit_time"],
+                    "repo":        commit["repo"],
+                    "author":      commit["author"],
+                    "message":     commit["message"],
+                },
+                source={"kind": "demo_seed"},
             ))
 
     for plan in plans:

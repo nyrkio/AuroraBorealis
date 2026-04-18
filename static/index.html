@@ -18,7 +18,7 @@
       white-space: nowrap;
     }
     #status-panel strong { margin-right: 8px; }
-    #brand-logo { height: 20px; width: 20px; vertical-align: -5px;
+    #brand-logo { height: 35px; width: 35px; vertical-align: -11px;
       margin-right: 6px; opacity: 0.9; }
     #status-panel .muted { color: #9ab; opacity: 0.8; }
     #hint-toggle { cursor: help; margin-left: 10px;
@@ -58,31 +58,22 @@
     .shape-row { display: flex; align-items: center; gap: 6px; margin: 2px 0; }
     .swatch { display: inline-block; width: 14px; text-align: center; }
 
-    #series-panel {
-      flex: 1 1 auto; min-height: 0;
-      padding: 8px 12px;
-      font-size: 11px; color: #cdd;
-      display: flex; flex-direction: column;
-      background: linear-gradient(to right, rgba(0,0,0,0.35) 0%, rgba(0,0,0,0) 100%);
-      border-radius: 8px;
+    #z-pager {
+      position: absolute; top: 58px; left: 50%; transform: translateX(-50%);
+      z-index: 5;
+      display: flex; align-items: center; gap: 6px;
+      padding: 4px 10px;
+      background: rgba(0,0,0,0.55);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 14px;
+      backdrop-filter: blur(4px);
+      color: #cdd; font-size: 11px;
     }
-    #series-panel h3, #series-pager { flex: 0 0 auto; }
-    #series-list { flex: 1 1 auto; overflow-y: auto; min-height: 0; }
-    #series-panel h3 { margin: 0 0 6px 0; font-size: 11px; font-weight: 600; opacity: 0.7; letter-spacing: 0.05em; text-transform: uppercase; }
-    #series-pager { display: flex; align-items: center; gap: 4px; margin-bottom: 6px; font-size: 11px; }
-    #series-pager button { background: none; border: 1px solid rgba(255,255,255,0.15); color: #cdd;
+    #z-pager button { background: none; border: 1px solid rgba(255,255,255,0.15); color: #cdd;
       cursor: pointer; padding: 1px 8px; border-radius: 3px; line-height: 1.3; }
-    #series-pager button:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: #fff; }
-    #series-pager button:disabled { opacity: 0.3; cursor: default; }
-    #series-pager .counter { opacity: 0.7; flex: 1; text-align: center; }
-    #series-list { list-style: none; padding: 0; margin: 0; }
-    #series-list li {
-      padding: 2px 4px; border-radius: 3px; cursor: default;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      transition: color 0.15s;
-    }
-    #series-list li.active { color: var(--series-color, #fff); font-weight: 600; }
-    #series-list li.neighbor { color: var(--series-color, #cdd); opacity: 0.75; }
+    #z-pager button:hover:not(:disabled) { background: rgba(255,255,255,0.08); color: #fff; }
+    #z-pager button:disabled { opacity: 0.3; cursor: default; }
+    #z-pager .counter { opacity: 0.7; text-align: center; min-width: 80px; }
 
     #commit-panel {
       position: absolute; right: 0; top: 0; bottom: 0; width: 320px;
@@ -167,23 +158,38 @@
       display: flex; flex-direction: column; gap: 10px;
     }
     #filters {
-      flex: 0 0 auto;
+      flex: 1 1 auto; min-height: 0;
       display: flex; flex-direction: column; gap: 10px;
       padding: 10px 14px;
-      background: rgba(0,0,0,0.45);
-      border: 1px solid rgba(255,255,255,0.08);
-      border-radius: 10px;
+      /* Mirror the commit-panel's gradient: solid side attached to the
+         screen edge, fading toward the graph. Same intensity on both
+         sides of the scene. */
+      background: linear-gradient(to right, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 100%);
       color: #cdd; font-size: 11px;
-      backdrop-filter: blur(4px);
+      overflow: hidden;
     }
-    #filters .group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    /* Each group claims an even share of the column. Its body scrolls
+       internally so a 150-value test_name list doesn't push other
+       sections off-screen. Sections collapse to just their title by
+       toggling the ``collapsed`` class on the group. */
+    #filters .group { display: flex; flex-direction: column; gap: 4px;
+                      min-width: 0; min-height: 0; flex: 1 1 0;
+                      overflow: hidden; }
+    #filters .group.collapsed { flex: 0 0 auto; }
+    #filters .group.collapsed .radios { display: none; }
     #filters .group-title { opacity: 0.6; font-size: 10px; letter-spacing: 0.05em;
-                            text-transform: uppercase; }
-    #filters .radios { display: flex; flex-direction: column; gap: 2px; }
+                            text-transform: uppercase; cursor: pointer;
+                            user-select: none; flex: 0 0 auto; }
+    #filters .group-title::before { content: "▾ "; font-size: 9px; opacity: 0.6; }
+    #filters .group.collapsed .group-title::before { content: "▸ "; }
+    #filters .radios { display: flex; flex-direction: column; gap: 2px;
+                       overflow-y: auto; min-height: 0; flex: 1 1 auto; }
     #filters .radios label { display: flex; align-items: center; gap: 6px; cursor: pointer;
                              max-width: 260px; white-space: nowrap; overflow: hidden;
                              text-overflow: ellipsis; }
-    #filters input[type="radio"] { margin: 0; accent-color: #78c8ff; }
+    #filters input[type="radio"],
+    #filters input[type="checkbox"] { margin: 0; accent-color: #78c8ff; }
+    #filters .radios .all-toggle { opacity: 0.7; font-style: italic; }
     #filters .slider-group { min-width: 280px; }
     #time-filter {
       position: absolute; bottom: 14px; left: 220px; right: 330px;
@@ -225,8 +231,17 @@
       width: 14px; height: 14px; border-radius: 50%;
       background: #78c8ff; border: none; cursor: pointer;
     }
-    #time-filter .slider-labels { display: flex; justify-content: space-between; font-size: 10px;
+    /* Fixed-position date markers under the track: anchored at
+       percentage positions so they sit under the right commit
+       regardless of handle movement. ``transform:translateX(-50%)``
+       centers each label on its anchor; the first and last drop
+       that to stay flush with the bar edges. */
+    #time-filter .slider-labels { position: relative; height: 14px; font-size: 10px;
                                   opacity: 0.7; margin-top: 2px; font-family: ui-monospace, Menlo, monospace; }
+    #time-filter .slider-labels .lbl { position: absolute; top: 0;
+                                       transform: translateX(-50%); white-space: nowrap; }
+    #time-filter .slider-labels .lbl.edge-left  { transform: none; left: 0 !important; }
+    #time-filter .slider-labels .lbl.edge-right { transform: translateX(-100%); left: 100% !important; }
     /* Per-commit ticks above the slider — githash written vertically,
        CP count above it when > 0. Faded by default; reveal when the
        user hovers the time-filter area so the chrome stays clean. */
@@ -361,17 +376,14 @@
     <span style="color:#aee5b8">green</span> = improvement
   </div>
 
+  <div id="z-pager" style="display: none">
+    <button id="page-prev" title="previous page">«</button>
+    <span class="counter" id="page-counter"></span>
+    <button id="page-next" title="next page">»</button>
+  </div>
+
   <div id="left-column">
     <div id="filters" style="display: none"></div>
-    <div id="series-panel">
-      <h3>series</h3>
-      <div id="series-pager" style="display: none">
-        <button id="page-prev" title="previous page">«</button>
-        <span class="counter" id="page-counter"></span>
-        <button id="page-next" title="next page">»</button>
-      </div>
-      <ul id="series-list"></ul>
-    </div>
   </div>
 
   <div id="graph"></div>
@@ -400,11 +412,40 @@
              recent benchmark history. Read-only — no account needed.</p>
           <form id="public-form">
             <input type="text" id="public-repo" autocomplete="off"
-                   placeholder="owner/repo" required pattern="[^/]+/[^/]+">
+                   placeholder="owner/repo" required pattern="[^\/]+\/[^\/]+">
             <button type="submit">Go</button>
           </form>
-          <div class="examples">try: unodb-dev/unodb</div>
+          <div class="examples">try: unodb-dev/unodb · tigerbeetle/devhubdb</div>
           <div class="status" id="public-status"></div>
+          <div id="file-picker" style="display:none; margin-top:10px">
+            <div id="workflows-section">
+              <div style="font-size:11px; opacity:0.7; margin-bottom:6px">
+                Pick one or more GitHub Actions workflows to import benchmark results from:
+              </div>
+              <div id="workflow-list" style="max-height:140px; overflow:auto;
+                   border:1px solid rgba(255,255,255,0.1); border-radius:6px;
+                   background:rgba(0,0,0,0.2); font-size:12px;
+                   padding:4px 0;"></div>
+              <div style="margin-top:6px; display:flex; gap:8px; align-items:center">
+                <button id="run-backfill" type="button"
+                        style="padding:5px 10px; font-size:12px;
+                               background:rgba(120,200,255,0.15);
+                               border:1px solid rgba(120,200,255,0.5);
+                               color:#cdd; border-radius:4px; cursor:pointer;"
+                        disabled>Detect and Import Benchmarks</button>
+                <span id="backfill-count" style="font-size:11px; opacity:0.55"></span>
+              </div>
+            </div>
+            <div id="files-section" style="margin-top:12px">
+              <div style="font-size:11px; opacity:0.7; margin-bottom:6px">
+                Or pick a data file to import:
+              </div>
+              <div id="file-list" style="max-height:160px; overflow:auto;
+                   border:1px solid rgba(255,255,255,0.1); border-radius:6px;
+                   background:rgba(0,0,0,0.2); font-size:12px;
+                   font-family:ui-monospace,Menlo,monospace"></div>
+            </div>
+          </div>
         </div>
       </div>
       <div class="dashboards" id="dashboards" style="display: none">
@@ -441,13 +482,10 @@
 
     const container = document.getElementById("graph");
     const status = document.getElementById("status");
-    const list = document.getElementById("series-list");
 
     const k = new Aurora(container);
 
-    let items = [];  // zi -> <li>
-
-    const pagerEl = document.getElementById("series-pager");
+    const pagerEl = document.getElementById("z-pager");
     const pagePrev = document.getElementById("page-prev");
     const pageNext = document.getElementById("page-next");
     const pageCounter = document.getElementById("page-counter");
@@ -480,27 +518,6 @@
         pageNext.disabled = pageStart + pageSize >= total;
       } else {
         pagerEl.style.display = "none";
-      }
-    }
-
-    function buildLegend(series) {
-      list.innerHTML = "";
-      items = [];
-      for (const s of series) {
-        const li = document.createElement("li");
-        li.dataset.zi = s.zi;
-        // Full name on hover; truncate display to just the first
-        // " · "-separated segment (the test name) so the narrow list
-        // stays readable. Remaining tokens (metric, runner) are shown
-        // in the commit panel on hover and in the URL filters.
-        const short = (s.name.split(" · ")[0] || s.name);
-        li.textContent = short;
-        li.title = s.name;
-        li.style.setProperty("--series-color", "#" + s.color.toString(16).padStart(6, "0"));
-        li.addEventListener("mouseenter", () => k.hoverSeries(s.zi));
-        li.addEventListener("mouseleave", () => k.hoverSeries(-1));
-        list.appendChild(li);
-        items[s.zi] = li;
       }
     }
 
@@ -644,7 +661,6 @@
     k.narrator.subscribe(e => {
       if (e.type === "render_complete") {
         status.textContent = `· ${e.point_count} points · ${e.change_points} change points`;
-        buildLegend(e.series);
         updatePager(e);
         // Kick off the flyover automatically — the 10s countdown gives
         // viewers time to read the scene first.
@@ -653,18 +669,6 @@
         updateFlyover(e);
       } else if (e.type === "point_hovered") {
         showPoint(e.point, e.siblings);
-      } else if (e.type === "hover_changed") {
-        for (let i = 0; i < items.length; i++) {
-          const li = items[i];
-          if (!li) continue;
-          li.classList.remove("active", "neighbor");
-          if (e.zi === -1) continue;
-          if (i === e.zi) li.classList.add("active");
-          else if (Math.abs(i - e.zi) === 1) li.classList.add("neighbor");
-        }
-        if (e.zi !== -1 && items[e.zi]) {
-          items[e.zi].scrollIntoView({ block: "nearest" });
-        }
       }
     });
 
@@ -707,7 +711,10 @@
           const a = document.createElement("a");
           a.className = "dash-card";
           // Github is the default; strip the vendor prefix from the URL.
-          a.href = `?repo=${encodeURIComponent(short)}&metric=real_time`;
+          // No metric= pinning: different repos have different native
+          // metric vocabularies (TPS / RSS / build time / …), so the
+          // dashboard decides per data what to show by default.
+          a.href = `?repo=${encodeURIComponent(short)}`;
           const runCount = d.run_count || 0;
           const latest = d.latest && (d.latest.$date || d.latest);
           const latestDay = latest ? new Date(latest).toISOString().slice(0, 10) : "?";
@@ -718,28 +725,33 @@
       }).catch(() => {});
       const form = document.getElementById("public-form");
       const statusEl = document.getElementById("public-status");
-      form.addEventListener("submit", async (e) => {
-        e.preventDefault();
-        const repo = document.getElementById("public-repo").value.trim();
-        if (!/^[^/]+\/[^/]+$/.test(repo)) {
-          statusEl.textContent = "expected owner/name";
-          return;
-        }
-        statusEl.textContent = "Requesting backfill…";
+      const pickerEl = document.getElementById("file-picker");
+      const fileListEl = document.getElementById("file-list");
+      const workflowListEl = document.getElementById("workflow-list");
+      const runBackfillEl = document.getElementById("run-backfill");
+      const backfillCountEl = document.getElementById("backfill-count");
+      const filesSectionEl = document.getElementById("files-section");
+      const workflowsSectionEl = document.getElementById("workflows-section");
+
+      // Track which workflow filenames the user has checked.
+      let selectedWorkflows = new Set();
+
+      async function runBackfill(repo, workflows) {
+        const n = workflows.length;
+        statusEl.textContent = `Queuing backfill for ${n} workflow${n === 1 ? "" : "s"}…`;
+        pickerEl.style.display = "none";
         try {
           const r = await fetch("api/v3/public/connect", {
             method: "POST",
             headers: {"content-type": "application/json"},
-            body: JSON.stringify({repo}),
+            body: JSON.stringify({repo, workflows}),
           });
           if (!r.ok) {
             statusEl.textContent = `error: ${r.status} ${await r.text()}`;
             return;
           }
           statusEl.textContent = "Ingesting — polling for data (up to ~90s)…";
-          // Poll the list endpoint; redirect once any runs show up.
-          // API path keeps the `gh/` prefix; user-facing URL doesn't.
-          const testsUrl = `/api/v3/tests/gh/${repo}?metric=real_time`;
+          const testsUrl = `/api/v3/tests/gh/${repo}`;
           const t0 = Date.now();
           while (Date.now() - t0 < 90_000) {
             await new Promise(res => setTimeout(res, 3000));
@@ -747,7 +759,7 @@
             if (tr.ok) {
               const d = await tr.json();
               if (d.length > 0) {
-                location.search = `?repo=${repo}&metric=real_time`;
+                location.search = `?repo=${repo}`;
                 return;
               }
             }
@@ -755,6 +767,161 @@
           statusEl.textContent = "still ingesting — try reloading in a minute";
         } catch (err) {
           statusEl.textContent = "error: " + err.message;
+        }
+      }
+
+      async function ingestFile(sourceRepo, path) {
+        statusEl.textContent = `Fetching ${path} and ingesting…`;
+        pickerEl.style.display = "none";
+        try {
+          const r = await fetch("api/v3/public/ingest-url", {
+            method: "POST",
+            headers: {"content-type": "application/json"},
+            body: JSON.stringify({source_repo: sourceRepo, path}),
+          });
+          const body = await r.json().catch(() => ({}));
+          if (!r.ok) {
+            statusEl.textContent = `error: ${r.status} ${body.detail || ""}`;
+            return;
+          }
+          location.search = `?repo=${body.target_repo}`;
+        } catch (err) {
+          statusEl.textContent = "error: " + err.message;
+        }
+      }
+
+      function renderFileList(sourceRepo, files) {
+        fileListEl.innerHTML = "";
+        if (files.length === 0) {
+          filesSectionEl.style.display = "none";
+          return;
+        }
+        filesSectionEl.style.display = "block";
+        for (const f of files) {
+          const row = document.createElement("div");
+          row.style.padding = "6px 10px";
+          row.style.cursor = "pointer";
+          row.style.borderBottom = "1px solid rgba(255,255,255,0.05)";
+          row.addEventListener("mouseenter", () =>
+            row.style.background = "rgba(120,200,255,0.12)");
+          row.addEventListener("mouseleave", () => row.style.background = "");
+          const sz = f.size != null
+            ? ` <span style="opacity:0.5">· ${Math.round(f.size / 1024)} KB</span>`
+            : "";
+          row.innerHTML = `${f.path}${sz}`;
+          row.addEventListener("click", () => ingestFile(sourceRepo, f.path));
+          fileListEl.appendChild(row);
+        }
+      }
+
+      function updateBackfillButton() {
+        const n = selectedWorkflows.size;
+        runBackfillEl.disabled = n === 0;
+        backfillCountEl.textContent = n === 0
+          ? "(nothing selected)"
+          : `${n} workflow${n === 1 ? "" : "s"} selected`;
+      }
+
+      function renderWorkflowList(workflows) {
+        workflowListEl.innerHTML = "";
+        selectedWorkflows = new Set();
+        if (workflows.length === 0) {
+          workflowsSectionEl.style.display = "none";
+          return;
+        }
+        workflowsSectionEl.style.display = "block";
+        for (const wf of workflows) {
+          const filename = (wf.path || "").split("/").pop();
+          const label = document.createElement("label");
+          label.style.display = "flex";
+          label.style.alignItems = "center";
+          label.style.gap = "8px";
+          label.style.padding = "4px 10px";
+          label.style.cursor = "pointer";
+          const input = document.createElement("input");
+          input.type = "checkbox";
+          input.value = filename;
+          input.addEventListener("change", () => {
+            if (input.checked) selectedWorkflows.add(filename);
+            else selectedWorkflows.delete(filename);
+            updateBackfillButton();
+          });
+          label.appendChild(input);
+          const txt = document.createElement("span");
+          txt.innerHTML = `<strong style="color:#cdd">${wf.name}</strong>`
+            + ` <span style="opacity:0.5; font-family:ui-monospace,Menlo,monospace">`
+            + `${filename}</span>`;
+          label.appendChild(txt);
+          workflowListEl.appendChild(label);
+        }
+        updateBackfillButton();
+      }
+
+      async function scanRepo(repo) {
+        statusEl.textContent = "Scanning repo for data files and workflows…";
+        const treeUrl = `https://api.github.com/repos/${repo}/git/trees/HEAD?recursive=1`;
+        const workflowsUrl = `https://api.github.com/repos/${repo}/actions/workflows`;
+        try {
+          // Fire both GitHub API calls in parallel — independent data,
+          // no reason to serialise.
+          const [tr, wr] = await Promise.all([fetch(treeUrl), fetch(workflowsUrl)]);
+          if (!tr.ok) {
+            if (tr.status === 403) {
+              statusEl.textContent = "GitHub API rate-limited — sign in or try later";
+            } else if (tr.status === 404) {
+              statusEl.textContent = `repo not found: ${repo}`;
+            } else {
+              statusEl.textContent = `GitHub API error ${tr.status}`;
+            }
+            return;
+          }
+          const tree = await tr.json();
+          const files = (tree.tree || [])
+            .filter(n => n.type === "blob" && /\.(json|csv)$/i.test(n.path))
+            .map(n => ({path: n.path, size: n.size}));
+          const truncNote = tree.truncated ? " (truncated)" : "";
+
+          let workflows = [];
+          if (wr.ok) {
+            const wdoc = await wr.json();
+            workflows = (wdoc.workflows || [])
+              .filter(w => w.state === "active")
+              .map(w => ({name: w.name, path: w.path, id: w.id}));
+          }
+
+          const fCount = files.length;
+          const wCount = workflows.length;
+          statusEl.textContent =
+            `Found ${fCount} data file${fCount === 1 ? "" : "s"}${truncNote} · `
+            + `${wCount} workflow${wCount === 1 ? "" : "s"}`;
+          renderFileList(repo, files);
+          renderWorkflowList(workflows);
+          if (fCount === 0 && wCount === 0) {
+            pickerEl.style.display = "block";
+            fileListEl.innerHTML = `<div style="padding:10px; opacity:0.6">
+              Nothing to import — no data files or workflows found.</div>`;
+            filesSectionEl.style.display = "block";
+          } else {
+            pickerEl.style.display = "block";
+          }
+        } catch (err) {
+          statusEl.textContent = "error: " + err.message;
+        }
+      }
+
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        const repo = document.getElementById("public-repo").value.trim();
+        if (!/^[^/]+\/[^/]+$/.test(repo)) {
+          statusEl.textContent = "expected owner/name";
+          return;
+        }
+        scanRepo(repo);
+      });
+      runBackfillEl.addEventListener("click", () => {
+        const repo = document.getElementById("public-repo").value.trim();
+        if (repo && selectedWorkflows.size > 0) {
+          runBackfill(repo, [...selectedWorkflows]);
         }
       });
       // Landing is the whole interaction; don't continue to aurora boot.
@@ -785,20 +952,37 @@
     const testsBase = `/api/v3/tests/${repoPath}`;
     const facetsBase = `${testsBase}/facets`;
 
-    // Mutable filter state. `metric` is always present (even for demo data
-    // that has only one metric); runner / workflow / branch are populated
-    // by facets when they vary.
+    // Mutable filter state. Each facet dim is an array; empty = "all".
+    // Multi-valued dims are encoded as repeated query params
+    // (``?test_name=a&test_name=b``) — the standard web convention,
+    // no separator character to collide with value content. Timestamps
+    // stay scalar.
+    function _parseListParam(urlParams, extraParams, key) {
+      const a = urlParams.getAll(key).filter(Boolean);
+      if (a.length) return a;
+      return extraParams.getAll(key).filter(Boolean);
+    }
     const filters = {
-      metric: urlParams.get("metric") || extraParams.get("metric") || "",
-      branch: "", workflow: "", runner: "",
+      metric:    _parseListParam(urlParams, extraParams, "metric"),
+      branch:    _parseListParam(urlParams, extraParams, "branch"),
+      test_name: _parseListParam(urlParams, extraParams, "test_name"),
+      workflow:  _parseListParam(urlParams, extraParams, "workflow"),
+      runner:    _parseListParam(urlParams, extraParams, "runner"),
       since: "", until: "",
     };
 
     function buildQs(src, extraExclude = []) {
       const parts = [];
+      const encKey = encodeURIComponent;
+      const encVal = encodeURIComponent;
       for (const [k, v] of Object.entries(src)) {
-        if (v && !extraExclude.includes(k)) {
-          parts.push(`${encodeURIComponent(k)}=${encodeURIComponent(v)}`);
+        if (extraExclude.includes(k)) continue;
+        if (Array.isArray(v)) {
+          // Repeated params for multi-value filters: ?k=a&k=b.
+          // No separator character means no content-collision risk.
+          for (const item of v) parts.push(`${encKey(k)}=${encVal(item)}`);
+        } else if (v) {
+          parts.push(`${encKey(k)}=${encVal(v)}`);
         }
       }
       return parts.length ? "?" + parts.join("&") : "";
@@ -885,41 +1069,81 @@
           const h = document.createElement("div");
           h.className = "group-title";
           h.textContent = dim;
+          h.title = "click to collapse";
+          h.addEventListener("click", () => group.classList.toggle("collapsed"));
           group.appendChild(h);
-          const radios = document.createElement("div");
-          radios.className = "radios";
-          const mkRadio = (val, label) => {
-            const id = `f-${dim}-${btoa(val || "all").replace(/=/g,"")}`;
+          const rows = document.createElement("div");
+          rows.className = "radios";
+          // "All" is a shortcut: checking it clears the dim's filter
+          // (empty array = server returns everything); unchecking it
+          // by picking any individual box just lets the per-value
+          // checkboxes take over. Shown as italic so it reads as a
+          // meta-row, not a real value.
+          const allWrap = document.createElement("label");
+          const allInput = document.createElement("input");
+          allInput.type = "checkbox";
+          allInput.checked = (filters[dim] || []).length === 0;
+          allInput.addEventListener("change", () => {
+            if (allInput.checked) {
+              filters[dim] = [];
+              // Uncheck all per-value boxes for this dim.
+              rows.querySelectorAll('input.val').forEach(i => { i.checked = false; });
+            } else {
+              // Can't un-check "all" without picking something — snap back.
+              allInput.checked = true;
+              return;
+            }
+            void reload();
+          });
+          allWrap.appendChild(allInput);
+          const allText = document.createElement("span");
+          allText.className = "all-toggle";
+          allText.textContent = `all (${values.length})`;
+          allWrap.appendChild(allText);
+          rows.appendChild(allWrap);
+
+          for (const val of values) {
+            const id = `f-${dim}-${btoa(val).replace(/=/g,"")}`;
             const wrap = document.createElement("label");
             wrap.setAttribute("for", id);
             const input = document.createElement("input");
-            input.type = "radio"; input.name = `filter-${dim}`; input.id = id;
+            input.type = "checkbox";
+            input.id = id;
+            input.className = "val";
             input.value = val;
             input.dataset.dim = dim;
-            input.checked = (filters[dim] === val) || (!filters[dim] && val === "");
+            input.checked = (filters[dim] || []).includes(val);
             input.addEventListener("change", () => {
-              filters[dim] = val;
+              const set = new Set(filters[dim] || []);
+              if (input.checked) set.add(val); else set.delete(val);
+              filters[dim] = [...set];
+              // "All" auto-syncs: it becomes checked iff no specific
+              // value is selected, and turns off the moment the user
+              // picks anything concrete.
+              allInput.checked = filters[dim].length === 0;
               void reload();
             });
             wrap.appendChild(input);
-            wrap.appendChild(document.createTextNode(label));
-            wrap.title = label;
-            radios.appendChild(wrap);
-          };
-          mkRadio("", `all (${values.length})`);
-          for (const v of values) mkRadio(v, v);
-          group.appendChild(radios);
+            wrap.appendChild(document.createTextNode(val));
+            wrap.title = val;
+            // Hover a row to highlight every Z-lane whose series
+            // matches this (dim, value) — e.g. hovering ``threads · 8``
+            // lights up all series running with 8 threads, across
+            // every test_name and metric.
+            wrap.addEventListener("mouseenter", () => k.hoverSeriesMatching(dim, val));
+            wrap.addEventListener("mouseleave", () => k.clearHoverGroup());
+            rows.appendChild(wrap);
+          }
+          group.appendChild(rows);
           filtersEl.appendChild(group);
         }
         _filtersRendered = true;
       } else if (_filtersRendered) {
-        // Sync the checked radio to the current `filters` state — the
-        // controls already exist, we just update which one is marked.
-        filtersEl.querySelectorAll('input[type="radio"]').forEach((input) => {
+        // Sync each checkbox to the current filters state.
+        filtersEl.querySelectorAll('input.val').forEach((input) => {
           const dim = input.dataset.dim;
           if (!dim) return;
-          input.checked = (filters[dim] === input.value)
-            || (!filters[dim] && input.value === "");
+          input.checked = (filters[dim] || []).includes(input.value);
         });
       }
       // The time-range slider is commit-indexed, not timestamp-based —
@@ -955,12 +1179,8 @@
       if (!runs || runs.length === 0) return;
       const uniq = new Set();
       for (const r of runs) {
-        const c = r.commit;
-        const t = (c && typeof c.commit_time === "number")
-          ? c.commit_time * 1000
-          : new Date(typeof r.timestamp === "string" ? r.timestamp
-                     : r.timestamp && r.timestamp.$date).getTime();
-        if (!isNaN(t)) uniq.add(t);
+        const t = (r.commit || {}).commit_time;
+        if (typeof t === "number") uniq.add(t * 1000);
       }
       const commitTimes = [...uniq].sort((a, b) => a - b);
       const N = commitTimes.length;
@@ -985,15 +1205,13 @@
         // the slider (githash vertical, CP badge above if >0).
         const commitMeta = new Map();  // ts -> {sha, author, message}
         for (const r of runs) {
-          const c = r.commit;
-          if (!c) continue;
-          const t = (typeof c.commit_time === "number")
-            ? c.commit_time * 1000
-            : new Date(typeof r.timestamp === "string" ? r.timestamp
-                       : r.timestamp && r.timestamp.$date).getTime();
-          if (isNaN(t) || commitMeta.has(t)) continue;
+          const c = r.commit || {};
+          if (typeof c.commit_time !== "number") continue;
+          const t = c.commit_time * 1000;
+          if (commitMeta.has(t)) continue;
+          const rawSha = c.short_sha || c.sha || "";
           commitMeta.set(t, {
-            sha: (c.short_sha || c.sha || "").slice(0, 7),
+            sha: rawSha.slice(0, 7),
             author: c.author || "",
             message: c.message || c.subject || "",
           });
@@ -1024,30 +1242,69 @@
             + `</div>`;
         }
         ticksHtml += '</div>';
+        // Fixed date markers. Four base anchors:
+        //   - left edge (oldest)
+        //   - symmetric = (N−1 − defaultSinceIdx), mirroring the
+        //     default-since offset around the midpoint
+        //   - defaultSinceIdx (where the left handle starts)
+        //   - right edge (newest)
+        //
+        // Then cascade additional markers at the same step inward
+        // from both ends until they meet in the middle — but only
+        // when default-since has a long tail behind it. Specifically
+        // when the time offset from the oldest commit to default-
+        // since covers at least 75% of the total timeline — i.e.
+        // the primary window is a small recent slice and there's
+        // a long past to fill with evenly-spaced labels. On repos
+        // where default-since already sits near the start, step is
+        // large compared to the total and cascading would collapse.
+        const step = (N - 1) - defaultSinceIdx;
+        const symmetricIdx = step;
+        const markerIdxSet = new Set([
+          0,
+          symmetricIdx,
+          defaultSinceIdx,
+          N - 1,
+        ]);
+        const tMin = commitTimes[0];
+        const tMax = commitTimes[N - 1];
+        const tSince = commitTimes[defaultSinceIdx];
+        const totalSpan = Math.max(1, tMax - tMin);
+        const sinceOffset = tSince - tMin;
+        if (step > 0 && sinceOffset >= 0.75 * totalSpan) {
+          for (let k = 2; ; k++) {
+            const leftI  = k * step;
+            const rightI = (N - 1) - k * step;
+            if (leftI >= rightI) break;
+            markerIdxSet.add(leftI);
+            markerIdxSet.add(rightI);
+          }
+        }
+        const markerIdxs = [...markerIdxSet].sort((a, b) => a - b);
+        const pct = (i) => (N > 1 ? (i / (N - 1)) * 100 : 50);
+        const labelHtml = markerIdxs.map((i, pos) => {
+          const cls = pos === 0 ? "lbl edge-left"
+                    : pos === markerIdxs.length - 1 ? "lbl edge-right"
+                    : "lbl";
+          return `<span class="${cls}" style="left:${pct(i)}%">`
+               + `${fmtDay(commitTimes[i])}</span>`;
+        }).join("");
         timeFilterEl.innerHTML = `
           ${ticksHtml}
           <div class="slider-wrap">
             <input id="f-since" type="range" min="0" max="${N - 1}" step="1" value="${_sinceIdx}">
             <input id="f-until" type="range" min="0" max="${N - 1}" step="1" value="${_untilIdx}">
           </div>
-          <div class="slider-labels">
-            <span id="f-since-label">${fmtDay(commitTimes[_sinceIdx])}</span>
-            <span id="f-until-label">${fmtDay(commitTimes[_untilIdx])}</span>
-          </div>
+          <div class="slider-labels">${labelHtml}</div>
         `;
         const sinceEl = timeFilterEl.querySelector("#f-since");
         const untilEl = timeFilterEl.querySelector("#f-until");
-        const sinceLab = timeFilterEl.querySelector("#f-since-label");
-        const untilLab = timeFilterEl.querySelector("#f-until-label");
         const update = () => {
           let s = +sinceEl.value, u = +untilEl.value;
           if (s > u) {
             if (document.activeElement === sinceEl) untilEl.value = s;
             else sinceEl.value = u;
-            s = +sinceEl.value; u = +untilEl.value;
           }
-          sinceLab.textContent = fmtDay(commitTimes[s]);
-          untilLab.textContent = fmtDay(commitTimes[u]);
         };
         const applyWindow = () => {
           _sinceIdx = +sinceEl.value;

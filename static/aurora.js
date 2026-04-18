@@ -153,17 +153,23 @@ function variance(xs) {
   return s / xs.length;
 }
 
-// Candidate per-run attribute keys that carve series identity when the
-// dataset actually varies along them. Facets in the UI use the same set.
-const SPLIT_ATTRS = ["runner", "workflow", "branch"];
+// Known scalar dimensions live at specific nested paths in the
+// canonical benchzoo shape. Everything else is a free-form benchmark
+// parameter under ``test.params.*``.
+const _SCALAR_PATHS = {
+  branch:    (run) => (run.commit || {}).ref,
+  runner:    (run) => (run.run || {}).runner,
+  workflow:  (run) => (run.run || {}).workflow,
+  test_name: (run) => (run.test || {}).test_name,
+};
 
 function _attrOrField(run, key) {
-  if (key === "branch") return run.branch;
-  return (run.attributes || {})[key];
+  if (key in _SCALAR_PATHS) return _SCALAR_PATHS[key](run);
+  return ((run.test || {}).params || {})[key];
 }
 
 function seriesKey(run, metric, splitBy = []) {
-  const base = `${run.attributes?.test_name || "?"}|${metric.name}`;
+  const base = `${(run.test || {}).test_name || "?"}|${metric.name}`;
   if (splitBy.length === 0) return base;
   const extras = splitBy.map(k => _attrOrField(run, k) || "").join("|");
   return `${base}|${extras}`;
@@ -312,6 +318,7 @@ export class Aurora {
     this._seriesLines = [];   // zi -> Line (populated each render)
     this._cpBeforeLines = []; // zi -> Line2 for the pre-change-point segment (optional)
     this._hoveredZi = -1;
+    this._hoveredGroup = null;
     this._lineBaseOpacity = 0.10;
     this._lineBaseWidth = 1;  // pixels
     this._raycaster = new THREE.Raycaster();
@@ -508,6 +515,7 @@ export class Aurora {
     this._seriesInfo = [];
     this._changePoints = [];
     this._hoveredZi = -1;
+    this._hoveredGroup = null;
     this._hoveredMesh = null;
     this._columnMeshes = null;
     this._lockedColumn = null;
@@ -523,29 +531,52 @@ export class Aurora {
     this._flyState = "idle";
     if (!runs || runs.length === 0) return;
 
-    // Auto-detect which candidate attrs *vary* across the fetched runs;
-    // those become part of series identity so e.g. the same test on Intel
-    // and ARM render as two distinct series. Attrs with a single distinct
-    // value collapse out (one main branch → no split).
-    const splitBy = [];
-    for (const key of SPLIT_ATTRS) {
-      const distinct = new Set();
-      for (const run of runs) {
-        const v = _attrOrField(run, key);
-        if (v) distinct.add(v);
-        if (distinct.size > 1) break;
+    // Auto-detect which run-level dimensions *vary* across the fetched
+    // runs; those become part of series identity so e.g. the same test
+    // on Intel and ARM render as distinct Z-lanes. A dimension with a
+    // single distinct value collapses out (one branch → no split).
+    //
+    // Scope: every attribute key the data carries, plus ``branch``.
+    // The backend-side facet endpoint does the same dynamic discovery,
+    // so a parser introducing a new config key (threads, args, vus,
+    // clients, iterations, …) becomes a Z-split automatically. We
+    // don't fan out the axis with empty combos — only series that
+    // actually have a run under them get a lane (the ``series`` Map
+    // below takes care of that by construction).
+    const distinctByKey = new Map();
+    const bump = (key, val) => {
+      if (val == null || val === "") return;
+      if (!distinctByKey.has(key)) distinctByKey.set(key, new Set());
+      distinctByKey.get(key).add(val);
+    };
+    for (const run of runs) {
+      const commit = run.commit || {};
+      const runBlock = run.run || {};
+      bump("branch",   commit.ref);
+      bump("runner",   runBlock.runner);
+      bump("workflow", runBlock.workflow);
+      for (const [k, v] of Object.entries((run.test || {}).params || {})) {
+        bump(k, v);
       }
-      if (distinct.size > 1) splitBy.push(key);
     }
+    const splitBy = [];
+    for (const [key, vals] of distinctByKey) {
+      if (vals.size > 1) splitBy.push(key);
+    }
+    splitBy.sort();
+    // Remember the splitBy order so ``hoverSeriesMatching`` can map
+    // a (dim, value) pair back to the set of series that match.
+    this._splitBy = splitBy;
 
     // Gather series (test_name, metric_name, ...splitBy) -> info.
     const series = new Map();
     for (const run of runs) {
+      const commit = run.commit || {};
       for (const m of run.metrics || []) {
         const k = seriesKey(run, m, splitBy);
         if (!series.has(k)) {
           series.set(k, {
-            test_name: run.attributes?.test_name || "?",
+            test_name: (run.test || {}).test_name || "?",
             metric: m.name,
             unit: m.unit,
             direction: m.direction || inferDirection(unitToKind(m.unit, m.name)),
@@ -557,13 +588,11 @@ export class Aurora {
         }
         const entry = series.get(k);
         entry.values.push(m.value);
-        // Prefer commit (merge) time — a single commit can have many reruns,
-        // but the perf characteristic belongs to the code change. Fall back
-        // to run timestamp only if the v2 commit sub-document is missing.
-        const commit = run.commit || { sha: run.git_commit, short_sha: (run.git_commit || "").slice(0, 7) };
+        // Commit time is the authoritative ordering signal — stored
+        // as an epoch int on ``run.commit.commit_time``.
         const ts = (typeof commit.commit_time === "number")
           ? commit.commit_time * 1000
-          : new Date(_tsOf(run)).getTime();
+          : NaN;
         entry.times.push(ts);
         entry.commits.push(commit);
       }
@@ -588,7 +617,8 @@ export class Aurora {
     // Anything older than primaryStart fades into negative X.
     const pastSpan = Math.max(1, primaryStart - tMin);
 
-    // Per-series mean for Y scaling + variance for ordering.
+    // Per-series mean (for Y scaling), variance (tertiary sort key),
+    // and first/last timestamp (primary + secondary sort keys).
     // Y is scaled relative to the mean: flat-with-noise looks flat; a 20%
     // excursion reaches ~20% of the half-axis. Min/max stretch was misleading
     // (it turned pure noise into visual trends).
@@ -598,17 +628,39 @@ export class Aurora {
       s.mean = mean;
       const denom = Math.max(1e-9, Math.abs(mean));
       s.variance = variance(s.values.map(v => v / denom));
+      // s.times is populated by commit.commit_time and may contain NaN
+      // when a run lacked a commit — skip those for min/max purposes.
+      let lo = Infinity, hi = -Infinity;
+      for (const t of s.times) {
+        if (!isFinite(t)) continue;
+        if (t < lo) lo = t;
+        if (t > hi) hi = t;
+      }
+      s.firstTs = isFinite(lo) ? lo : 0;
+      s.lastTs  = isFinite(hi) ? hi : 0;
     }
 
-    // Order series so low-variance sits in back (small Z), high-variance
-    // in front. Hard cap on rendered series: past ~100 the Z-axis
-    // crowding makes the scene unreadable and the browser slow. User
-    // sees "top N by variance"; the rest are omitted from render for
-    // now (future: scroll the legend to page through them).
+    // Z-axis ordering (composed sort, applied as a single tuple):
+    //   1. ``lastTs`` ascending — series whose *newest* point is older
+    //      than others come first. That puts discontinued tests at the
+    //      front of the list, so they're shown on the first page even
+    //      though their numbers are static.
+    //   2. ``firstTs`` ascending — once ``lastTs`` ties, series whose
+    //      *oldest* point is older than others come first. Long-running
+    //      veterans — the ones that have been benchmarked the longest —
+    //      surface next.
+    //   3. variance descending — the tertiary tiebreaker, matching the
+    //      previous behaviour of "live action in front."
+    // Hard cap on rendered series: past ~200 the Z-axis crowding makes
+    // the scene unreadable and the browser slow. The pager shows later
+    // pages on demand.
     const MAX_SERIES = 200;
-    const sorted = [...series.keys()].sort(
-      (a, b) => series.get(b).variance - series.get(a).variance,
-    );
+    const sorted = [...series.keys()].sort((a, b) => {
+      const sa = series.get(a), sb = series.get(b);
+      if (sa.lastTs !== sb.lastTs) return sa.lastTs - sb.lastTs;
+      if (sa.firstTs !== sb.firstTs) return sa.firstTs - sb.firstTs;
+      return sb.variance - sa.variance;
+    });
     const totalSeries = sorted.length;
     // Clamp page window so it always lands on a valid range. The last
     // page is [max(0, total - MAX), total); earlier pages are full.
@@ -623,7 +675,10 @@ export class Aurora {
     // can't grow dots to blobs). Between those bounds it scales with
     // actual spacing.
     const allTimesSet = new Set();
-    for (const run of runs) allTimesSet.add(new Date(_tsOf(run)).getTime());
+    for (const run of runs) {
+      const ct = (run.commit || {}).commit_time;
+      if (typeof ct === "number") allTimesSet.add(ct * 1000);
+    }
     const commitTimes = [...allTimesSet].sort((a, b) => a - b);
     const nCommits = commitTimes.length;
 
@@ -648,10 +703,16 @@ export class Aurora {
     const xByTs = new Map();
     primaryTimes.forEach((t, i) => xByTs.set(t, i * xStep));
     // Tail laid out backwards from the primary's left edge — newest
-    // tail commit at -xStep, oldest further out. We use half-step on
+    // tail commit at -xStep, oldest further out. We use 0.7× step on
     // the tail so it compresses slightly and reads as receding past.
+    // Bounded by |min(x)| < max(x): the tail never extends further
+    // left than the primary reaches right. Older commits beyond that
+    // bound get no x-position and are skipped at render time.
     const tailStep = xStep * 0.7;
-    [...tailTimes].reverse().forEach((t, i) => xByTs.set(t, -(i + 1) * tailStep));
+    const primaryXMax = Math.max(0, (nPrimary - 1) * xStep);
+    const maxTailCount = Math.floor(primaryXMax / tailStep - 1e-9);
+    [...tailTimes].reverse().slice(0, maxTailCount).forEach((t, i) =>
+      xByTs.set(t, -(i + 1) * tailStep));
     const globalIdxByTs = new Map(commitTimes.map((t, i) => [t, i]));
 
     // Enlargement caps. A hovered / column / CP marker must never draw
@@ -705,8 +766,20 @@ export class Aurora {
       const tier = seriesTier(zi);
       const lineHex = tierLineHex(zi);
       const tierColor = _srgb(((lineHex >> 16) & 0xff) / 255, ((lineHex >> 8) & 0xff) / 255, (lineHex & 0xff) / 255);
+      // dimValues: {dim_name: value} — the facet-dim→value projection
+      // used by hoverSeriesMatching to light up every series sharing
+      // a (dim, value) with a hovered facet row. Includes test_name
+      // and metric (always in series identity) plus each splitBy key.
+      const dimValues = {
+        test_name: s.test_name,
+        metric: s.metric,
+      };
+      for (let i2 = 0; i2 < splitBy.length; i2++) {
+        dimValues[splitBy[i2]] = s.splitVals[i2];
+      }
       this._seriesInfo[zi] = {
         key: k, zi, name: series_name, color: lineHex,
+        dimValues,
       };
 
       // Detect the series' most prominent step change up front so each
@@ -728,9 +801,16 @@ export class Aurora {
       }
 
       const linePos = [];
+      // Track where the CP landed in linePos after skips, because
+      // we skip observations whose commits exceed the tail cap and
+      // that desynchronises linePos-index from s.values-index.
+      let cpLinePosIdx = -1;
       for (let i = 0; i < s.values.length; i++) {
         const ts = s.times[i];
         const x = xByTs.get(ts);
+        // Commits outside the primary window AND beyond the tail cap
+        // get no x-slot; drop the observation entirely.
+        if (x === undefined) continue;
         // Coloring still follows wall-clock time: primary-window points
         // get the bright gradient, past points fade into grayscale.
         let color, emissiveFactor;
@@ -810,6 +890,7 @@ export class Aurora {
         // are the "column" the time-cursor plane highlights.
         if (!this._byIdx.has(globalIdx)) this._byIdx.set(globalIdx, []);
         this._byIdx.get(globalIdx).push(mesh);
+        if (isCp) cpLinePosIdx = linePos.length / 3;
         linePos.push(x, y, z);
       }
 
@@ -820,7 +901,10 @@ export class Aurora {
         // regression, green for an improvement) so the direction of the
         // step reads at a glance. Both segments share the CP vertex so
         // there's no visible gap.
-        const hasSplit = cpIdx > 0 && cpIdx < s.values.length - 1;
+        // Split uses the CP's *rendered* line-position index, not its
+        // original series index — the two diverge when we drop points
+        // beyond the tail cap.
+        const hasSplit = cpLinePosIdx > 0 && cpLinePosIdx < (linePos.length / 3) - 1;
 
         const mainGeo = new LineGeometry();
         mainGeo.setPositions(linePos);
@@ -844,7 +928,7 @@ export class Aurora {
           // Just the single segment from the point immediately before the
           // CP to the CP itself — a visual arrow into the step, not a long
           // trail from the start of history.
-          const beforePos = linePos.slice((cpIdx - 1) * 3, (cpIdx + 1) * 3);
+          const beforePos = linePos.slice((cpLinePosIdx - 1) * 3, (cpLinePosIdx + 1) * 3);
           const cpCol = cpIsRegression ? CP_REGRESSION : CP_IMPROVEMENT;
           const beforeMat = new LineMaterial({
             color: cpCol,
@@ -887,6 +971,36 @@ export class Aurora {
     const v = (zi == null || zi < 0) ? -1 : zi;
     if (v === this._hoveredZi) return;
     this._hoveredZi = v;
+    this._applyHoverState();
+  }
+
+  /**
+   * Highlight every series whose identity matches (dim, value). Used
+   * when the user hovers a facet-filter row on the left panel — e.g.
+   * hovering "threads · 8" lights up every series sharing that
+   * dim/value (possibly across many test_names / metrics), and dims
+   * everything else. No neighbor warm-up; it's a "set lighting"
+   * pattern, not a "follow the pointer" pattern.
+   *
+   * ``dim`` is the facet-key name (``test_name``, ``metric``, or any
+   * splitBy key like ``args`` / ``threads`` / ``runner``). ``value``
+   * is compared with ``String()`` coercion — facet rows are text, the
+   * underlying data may be int/str mixed.
+   */
+  hoverSeriesMatching(dim, value) {
+    const want = String(value);
+    const set = new Set();
+    for (const info of this._seriesInfo) {
+      if (!info) continue;
+      if (String(info.dimValues[dim]) === want) set.add(info.zi);
+    }
+    this._hoveredGroup = set.size > 0 ? set : null;
+    this._applyHoverState();
+  }
+
+  clearHoverGroup() {
+    if (this._hoveredGroup === null || this._hoveredGroup === undefined) return;
+    this._hoveredGroup = null;
     this._applyHoverState();
   }
 
@@ -1287,13 +1401,19 @@ export class Aurora {
     // and (if distinct) the currently-hovered line read as HOT. Everything
     // else is DIM, immediately.
     if (this._locked) neighborsFaded = true;
+    // Group hover overrides pointer hover: every series in the set is
+    // HOT, everything else DIM, no neighbor warmth.
+    const group = this._hoveredGroup;
     const setTargets = (line, i) => {
       if (!line) return;
       const baseOp = line.userData.baseOpacity ?? this._lineBaseOpacity;
       const baseW  = line.userData.baseWidth   ?? this._lineBaseWidth;
       let op, w;
       const isLocked = lockedZis ? lockedZis.has(i) : false;
-      if (this._hoveredZi === -1) {
+      if (group) {
+        if (group.has(i) || isLocked) { op = Math.max(baseOp, HOT); w = Math.max(baseW, HOT_W); }
+        else                          { op = Math.min(baseOp, DIM_OP); w = baseW; }
+      } else if (this._hoveredZi === -1) {
         if (isLocked) { op = Math.max(baseOp, HOT); w = Math.max(baseW, HOT_W); }
         else          { op = baseOp; w = baseW; }
       } else {
@@ -1441,9 +1561,3 @@ export class Aurora {
   }
 }
 
-function _tsOf(run) {
-  const ts = run.timestamp;
-  if (typeof ts === "string") return ts;
-  if (ts && typeof ts === "object" && "$date" in ts) return ts.$date;
-  return ts;
-}
