@@ -29,7 +29,7 @@ Two options, both compatible with the nyrkiov3 frontend decision:
 
 Ship the vanilla class as the core; the Svelte wrapper is a thin convenience layer.
 
-aurora must be a **standalone package usable from any host page** — nyrkiov3 dashboard is one consumer (aurora was formerly "kuutar"), public embed pages are another.
+aurora must be a **standalone package usable from any host page** — nyrkiov3 dashboard is one consumer (aurora was formerly "AuroraBorealis"), public embed pages are another.
 
 ### Performance budget
 - 60fps interaction with up to 10k data points across surface.
@@ -56,6 +56,6 @@ Should also work standalone with a static JSON file (for docs/demos).
 2. Does aurora own the time-range UI, or is that part of the host dashboard? Recommend: aurora owns the canvas + minimal in-canvas controls, host owns the chrome.
 3. Accessibility — 3D surfaces are inherently visual; we need a **table fallback** view for screen readers and keyboard nav. Don't ship without it.
 
-<<< 2. I don't know. The time range and other selective controls can work in both directions: parameters to a database query, but if data was already loaded, it can stay in RAM but becomes hidden / outside of zoomed window. So maybe it should be part of kuutar, but could be a separate component. (Not necessarily WebGL or 3d at all)
+<<< 2. I don't know. The time range and other selective controls can work in both directions: parameters to a database query, but if data was already loaded, it can stay in RAM but becomes hidden / outside of zoomed window. So maybe it should be part of AuroraBorealis, but could be a separate component. (Not necessarily WebGL or 3d at all)
 <<< 3. For Nyrkiö use cases, a typical workflow is thhat users select outlier and change points, review the exact value of them and also review git metadata: commit message and author, 
 <<< 1. Overall I feel this is a dark color scheme == night sky with silver stars. But outliers and change points could be red and orange. Height is not in itself a color, only to the extent some light and shadows help understand the form and height of hthe graph in different areas.
