@@ -1546,13 +1546,19 @@ export class Aurora {
     // in place — non-fatal.
     try {
       const cr = await fetch("api/v3/config");
-      if (cr.ok) this.config = await cr.json();
+      if (cr.ok) {
+        const payload = await cr.json();
+        // Unwrap JsonEE envelope if present; fall back to plain JSON.
+        this.config = payload?.data ?? payload;
+      }
     } catch (e) { /* ignore */ }
     this.config = this.config || { recent_cp_days: 14 };
 
     const res = await fetch(url);
     if (!res.ok) throw new Error(`fetch ${url}: ${res.status}`);
-    const runs = await res.json();
+    const payload = await res.json();
+    // Unwrap JsonEE envelope if present; fall back to plain JSON.
+    const runs = payload?.data ?? payload;
     // A fresh fetch always lands on page 0 — filter changes shouldn't
     // leave the view stuck on a high-variance page 4 that no longer
     // exists in the narrowed slice.
