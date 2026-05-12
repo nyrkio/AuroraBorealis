@@ -11,7 +11,10 @@ import os
 import random
 import sys
 
-from nyrkiov3.app import build_app, DEFAULT_SNAPSHOT_PATH
+from nyrkiov3.app import build_app
+
+# Secantusdb persists WiredTiger data here; delete the directory to reset.
+DEMO_STORAGE_PATH = "/home/claude/data/secantus"
 
 
 AUTHORS = [
@@ -174,20 +177,19 @@ def _seed_demo(app):
 
 
 def main():
-    # Persist to /home/claude/data so real data we later ingest (Turso,
-    # UnoDB) survives restarts. On first run the store is empty and we
-    # seed the synthetic demo; subsequent runs reload the snapshot.
-    # Delete the snapshot file to start over.
-    app = build_app(snapshot_path=DEFAULT_SNAPSHOT_PATH)
+    # secantusdb persists data natively in DEMO_STORAGE_PATH (WiredTiger).
+    # First run seeds synthetic demo data; subsequent runs find it already there.
+    # Delete DEMO_STORAGE_PATH to start over.
+    app = build_app(storage_path=DEMO_STORAGE_PATH)
     runs = app.store.collection("test_runs")
     # Seed demo data if its namespace specifically is missing, so real
     # ingested data (UnoDB etc.) in the same store doesn't block it.
     demo_count = runs.count({"absolute_name": "gh/demo/bench"})
     if demo_count == 0:
         _seed_demo(app)
-        print(f"seeded demo data; snapshotting to {DEFAULT_SNAPSHOT_PATH}")
+        print(f"seeded demo data into {DEMO_STORAGE_PATH}")
     n = runs.count()
-    print(f"store has {n} runs (from {DEFAULT_SNAPSHOT_PATH})")
+    print(f"store has {n} runs (from {DEMO_STORAGE_PATH})")
     here = os.path.dirname(os.path.abspath(__file__))
     app.static("/", os.path.join(here, "static"))
 
