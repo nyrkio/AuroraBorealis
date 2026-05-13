@@ -359,7 +359,10 @@ export class Aurora {
     // Resize handling.
     window.addEventListener("resize", () => this._onResize());
     this._animate = this._animate.bind(this);
-    requestAnimationFrame(this._animate);
+    this._rafId = null;
+    // Re-render whenever OrbitControls moves the camera (includes damping frames).
+    this.camController.controls.addEventListener('change', () => this._requestRender());
+    this._requestRender();
 
     // Stub hooks the post-v0 UI will call.
     this.goToChangePoint = (_id) => {};
@@ -961,6 +964,7 @@ export class Aurora {
       series: this.getSeries(),
       change_points: this._changePoints.length,
     });
+    this._requestRender();
   }
 
   getSeries() {
@@ -1076,6 +1080,7 @@ export class Aurora {
       this._cursorPlane.visible = false;
     }
     for (const m of newCol) this._applyMeshState(m);
+    this._requestRender();
   }
 
   // Central authority for each point mesh's visual state. Considers lock
@@ -1227,7 +1232,8 @@ export class Aurora {
     }
     this._flyList = stops;
     this._flyIdx = 0;
-    this._startCountdown();
+    this._flyState = "paused";
+    this._emitFlyover();
   }
 
   _startCountdown() {
@@ -1372,6 +1378,7 @@ export class Aurora {
       controls.target.lerpVectors(startTarget, endTarget, e);
       this.camera.position.lerpVectors(startCam, endCam, e);
       controls.update();
+      this._requestRender();
       if (k < 1) this._flyEaseRAF = requestAnimationFrame(tick);
       else this._flyEaseRAF = null;
     };
@@ -1444,9 +1451,16 @@ export class Aurora {
         if (this._hoveredZi !== -1) this._applyHoverState(true);
       }, 200);
     }
+    this._requestRender();
+  }
+
+  _requestRender() {
+    if (this._rafId) return;
+    this._rafId = requestAnimationFrame(this._animate);
   }
 
   _animate() {
+    this._rafId = null;
     // Hover ease: snap *up* to the highlight instantly, but glide *down*
     // over ~2.5s so de-hovered series don't flash off like lightning.
     // Linear fade so the tail drops to target instead of lingering
@@ -1454,22 +1468,25 @@ export class Aurora {
     const snap = !!this._locked;
     const OP_STEP = 0.045;
     const W_STEP  = 0.18;
+    let stillEasing = false;
     const easeLine = (line) => {
       if (!line || line.userData._targetOpacity == null) return;
       const mat = line.material;
       const curOp = mat.opacity;
       const tgtOp = line.userData._targetOpacity;
-      if (tgtOp >= curOp || snap) mat.opacity = tgtOp;
-      else mat.opacity = Math.max(tgtOp, curOp - OP_STEP);
+      if (tgtOp >= curOp || snap) { mat.opacity = tgtOp; }
+      else { mat.opacity = Math.max(tgtOp, curOp - OP_STEP); stillEasing = true; }
       const curW = mat.linewidth;
       const tgtW = line.userData._targetWidth;
       if (tgtW != null) {
-        if (tgtW >= curW || snap) mat.linewidth = tgtW;
-        else mat.linewidth = Math.max(tgtW, curW - W_STEP);
+        if (tgtW >= curW || snap) { mat.linewidth = tgtW; }
+        else { mat.linewidth = Math.max(tgtW, curW - W_STEP); stillEasing = true; }
       }
     };
     for (const line of this._seriesLines) easeLine(line);
     for (const line of this._cpBeforeLines) easeLine(line);
+    // camController.update() drives damping; if the camera actually moves
+    // it fires a 'change' event which calls _requestRender() for the next frame.
     this.camController.update();
     // Lock the starfield fully to the camera (position + orientation)
     // so the sky stays screen-fixed. Makes the user feel in control of
@@ -1479,7 +1496,9 @@ export class Aurora {
       this._stars.quaternion.copy(this.camera.quaternion);
     }
     this.renderer.render(this.scene, this.camera);
-    requestAnimationFrame(this._animate);
+    // Keep the loop alive only while line opacity/width is still gliding.
+    // Camera movement self-perpetuates via the 'change' listener above.
+    if (stillEasing) this._requestRender();
   }
 
   _onResize() {
@@ -1494,6 +1513,7 @@ export class Aurora {
     for (const line of this._cpBeforeLines) {
       if (line) line.material.resolution.set(w, h);
     }
+    this._requestRender();
   }
 
   setPage(pageStart) {
