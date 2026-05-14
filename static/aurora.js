@@ -299,6 +299,48 @@ export class Aurora {
     this._lockedPlane.position.copy(this._cursorPlane.position);
     this._lockedPlane.visible = false;
     this.scene.add(this._lockedPlane);
+
+    // Static "back-wall" planes — the 2D analogue of the X/Y/Z axes.
+    // Sit on the XY (z=0) and ZY (x=0) coordinate planes and stay
+    // visible all the time, so the eye has a reference surface to
+    // read point positions against. Slightly more opaque than the
+    // hover cursors so they read as solid geometry, not highlights.
+    const wallMat = new THREE.MeshBasicMaterial({
+      color: 0xffffff,
+      transparent: true,
+      opacity: 0.04,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const xyWallGeo = new THREE.PlaneGeometry(this.axisX, this.axisY);
+    const xyWall = new THREE.Mesh(xyWallGeo, wallMat);
+    xyWall.position.set(this.axisX / 2, this.axisY / 2, 0);
+    this.scene.add(xyWall);
+    const zyWallGeo = new THREE.PlaneGeometry(this.axisZ, this.axisY);
+    zyWallGeo.rotateY(Math.PI / 2);
+    const zyWall = new THREE.Mesh(zyWallGeo, wallMat);
+    zyWall.position.set(0, this.axisY / 2, this.axisZ / 2);
+    this.scene.add(zyWall);
+
+    // Group for "cast shadows" — flat dark dots projected onto the
+    // back walls when a commit column or series is highlighted /
+    // locked. Rebuilt from scratch each time the highlight state
+    // changes; keeps the rest of the render pipeline ignorant of
+    // it. See `_rebuildShadows`.
+    this._shadowGroup = new THREE.Group();
+    this.scene.add(this._shadowGroup);
+    // Bright (not dark) — the dark scene background means a true
+    // "shadow" wouldn't read.  The dots are echoes of the data
+    // points painted onto the back wall, brighter than the wall
+    // itself so they pop without dominating the foreground.
+    this._shadowMatLocked = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.55,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
+    this._shadowMatHover = new THREE.MeshBasicMaterial({
+      color: 0xffffff, transparent: true, opacity: 0.28,
+      depthWrite: false, side: THREE.DoubleSide,
+    });
     this._columnMeshes = null;
     this._lockedColumn = null;
     this._locked = null;   // { mesh, zi, idx, x }
@@ -534,6 +576,7 @@ export class Aurora {
     this._idxByTs = new Map();
     if (this._cursorPlane) this._cursorPlane.visible = false;
     if (this._lockedPlane) this._lockedPlane.visible = false;
+    if (this._shadowGroup) this._clearShadows();
     // Cancel any running flyover from a previous dataset.
     if (this._flyTimer) { clearTimeout(this._flyTimer); clearInterval(this._flyTimer); this._flyTimer = null; }
     if (this._flyEaseRAF) { cancelAnimationFrame(this._flyEaseRAF); this._flyEaseRAF = null; }
@@ -1091,6 +1134,72 @@ export class Aurora {
       this._cursorPlane.visible = false;
     }
     for (const m of newCol) this._applyMeshState(m);
+    this._rebuildShadows();
+    this._requestRender();
+  }
+
+  // ---- back-wall shadows -----------------------------------------
+  // When a commit column or a series is highlighted (hover) or
+  // locked (click), project its meshes as small dark dots onto the
+  // back walls.  A column's natural projection sits on the ZY wall
+  // (x=0) — it preserves the column's Z-vs-Y spread.  A series'
+  // natural projection sits on the XY wall (z=0) — it preserves the
+  // time-vs-value shape.  Hover shadows are lighter than locked
+  // shadows so a locked selection still dominates while a transient
+  // hover hints at what would change.
+  _clearShadows() {
+    const g = this._shadowGroup;
+    while (g.children.length) {
+      const c = g.children.pop();
+      if (c.geometry) c.geometry.dispose();
+    }
+  }
+  _addShadow(x, y, z, scale, mat) {
+    // CircleGeometry default lies in XY plane (normal +Z). For the
+    // ZY wall we rotate around Y so the disc faces +X.
+    const geo = new THREE.CircleGeometry(scale, 16);
+    if (z === 0) {
+      // XY wall — leave default orientation.
+    } else if (x === 0) {
+      geo.rotateY(Math.PI / 2);
+    }
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    this._shadowGroup.add(m);
+  }
+  _rebuildShadows() {
+    this._clearShadows();
+    // Tiny offset away from the wall so the dot draws ON TOP of the
+    // wall, never inside it (depth fighting with transparent geo).
+    const eps = 1e-4;
+    // Comfortably bigger than the data-point markers (capped ~0.010
+    // in the renderer) so the shadow reads as a deliberate echo and
+    // not noise.  Scales with the source point's emphasis so a CP
+    // casts a fatter shadow than a regular sample.
+    const dotScale = (m) =>
+      Math.max(0.014, (m.userData.baseScale || 1) * 0.014);
+    // -- locked: column → ZY wall (x=0); series → XY wall (z=0)
+    if (this._locked) {
+      for (const m of (this._lockedColumn || [])) {
+        this._addShadow(eps, m.position.y, m.position.z,
+                        dotScale(m), this._shadowMatLocked);
+      }
+      const zis = new Set(this._locked.zis || []);
+      if (zis.size) {
+        for (const m of this.pointsGroup.children) {
+          if (zis.has(m.userData.zi)) {
+            this._addShadow(m.position.x, m.position.y, eps,
+                            dotScale(m), this._shadowMatLocked);
+          }
+        }
+      }
+    }
+    // -- hover: column → ZY wall. (No "hovered series" set in the
+    //    current model — _hoveredMesh is a single mesh, not a row.)
+    for (const m of (this._columnMeshes || [])) {
+      this._addShadow(eps, m.position.y, m.position.z,
+                      dotScale(m), this._shadowMatHover);
+    }
     this._requestRender();
   }
 
@@ -1183,6 +1292,7 @@ export class Aurora {
     for (const m of this._lockedColumn) this._applyMeshState(m);
     // Locked series must read as HOT regardless of current hover.
     this._applyHoverState();
+    this._rebuildShadows();
     // Pin the info box to the clicked point (or all CPs on this commit
     // for a flyover stop).
     this.narrator.emit({
@@ -1200,6 +1310,7 @@ export class Aurora {
     this._lockedColumn = null;
     for (const m of old) this._applyMeshState(m);
     this._applyHoverState();
+    this._rebuildShadows();
   }
 
   // ---------- Flyover tour ----------
