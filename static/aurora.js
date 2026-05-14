@@ -284,7 +284,7 @@ export class Aurora {
     const cursorMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.018,
+      opacity: 0.18,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
@@ -294,7 +294,7 @@ export class Aurora {
     this.scene.add(this._cursorPlane);
     // Second plane that stays in place when a commit is locked.
     const lockedMat = cursorMat.clone();
-    lockedMat.opacity = 0.025;
+    lockedMat.opacity = 0.25;
     this._lockedPlane = new THREE.Mesh(cursorGeo, lockedMat);
     this._lockedPlane.position.copy(this._cursorPlane.position);
     this._lockedPlane.visible = false;
@@ -308,18 +308,27 @@ export class Aurora {
     const wallMat = new THREE.MeshBasicMaterial({
       color: 0xffffff,
       transparent: true,
-      opacity: 0.04,
+      opacity: 0.18,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
     const xyWallGeo = new THREE.PlaneGeometry(this.axisX, this.axisY);
     const xyWall = new THREE.Mesh(xyWallGeo, wallMat);
     xyWall.position.set(this.axisX / 2, this.axisY / 2, 0);
+    // Force the walls to render BEFORE everything else.  Without
+    // this, Three.js's back-to-front sort places the wall between
+    // near and far shadow dots (the wall's centroid sits in the
+    // middle of the data zone), and the wall ends up overdrawing
+    // the far-side dots — they fade out behind the wall's 18%
+    // white.  renderOrder=-1 pins the wall to the bottom of the
+    // draw queue so the dots always paint on top.
+    xyWall.renderOrder = -1;
     this.scene.add(xyWall);
     const zyWallGeo = new THREE.PlaneGeometry(this.axisZ, this.axisY);
     zyWallGeo.rotateY(Math.PI / 2);
     const zyWall = new THREE.Mesh(zyWallGeo, wallMat);
     zyWall.position.set(0, this.axisY / 2, this.axisZ / 2);
+    zyWall.renderOrder = -1;
     this.scene.add(zyWall);
 
     // Group for "cast shadows" — flat dark dots projected onto the
@@ -865,6 +874,10 @@ export class Aurora {
         // Commits outside the primary window AND beyond the tail cap
         // get no x-slot; drop the observation entirely.
         if (x === undefined) continue;
+        // TEMP: also drop the tail (anything left of the primary
+        // window — negative X).  Toggle this off to bring back the
+        // receding fade-into-past.
+        if (x < 0) continue;
         // Coloring still follows wall-clock time: primary-window points
         // get the bright gradient, past points fade into grayscale.
         let color, emissiveFactor;
@@ -1054,12 +1067,14 @@ export class Aurora {
     }
     this._hoveredGroup = set.size > 0 ? set : null;
     this._applyHoverState();
+    this._rebuildShadows();
   }
 
   clearHoverGroup() {
     if (this._hoveredGroup === null || this._hoveredGroup === undefined) return;
     this._hoveredGroup = null;
     this._applyHoverState();
+    this._rebuildShadows();
   }
 
   _onPointerMove(e) {
@@ -1151,7 +1166,17 @@ export class Aurora {
     const g = this._shadowGroup;
     while (g.children.length) {
       const c = g.children.pop();
-      if (c.geometry) c.geometry.dispose();
+      // Cloned meshes own their material (desaturated copy of the
+      // foreground's) but SHARE the foreground geometry — dispose
+      // material only.  Shadow lines own both their geometry (built
+      // fresh from the series points) and their material (desaturated
+      // + thickened clone of the foreground line's) — dispose both.
+      if (c.userData?._isShadowLine) {
+        c.geometry?.dispose();
+        c.material?.dispose();
+      } else if (c.userData?._isShadowClone) {
+        c.material?.dispose();
+      }
     }
   }
   _addShadow(x, y, z, scale, mat) {
@@ -1169,38 +1194,140 @@ export class Aurora {
   }
   _rebuildShadows() {
     this._clearShadows();
-    // Tiny offset away from the wall so the dot draws ON TOP of the
-    // wall, never inside it (depth fighting with transparent geo).
+    // Tiny offset away from the wall so the projected geometry
+    // draws ON TOP of the wall, never coplanar with it (depth
+    // fighting with transparent geo).
     const eps = 1e-4;
-    // Comfortably bigger than the data-point markers (capped ~0.010
-    // in the renderer) so the shadow reads as a deliberate echo and
-    // not noise.  Scales with the source point's emphasis so a CP
-    // casts a fatter shadow than a regular sample.
-    const dotScale = (m) =>
-      Math.max(0.014, (m.userData.baseScale || 1) * 0.014);
-    // -- locked: column → ZY wall (x=0); series → XY wall (z=0)
+
+    // Strategy: project by cloning the real foreground geometry —
+    // meshes via `mesh.clone()`, lines via a fresh Line2 over the
+    // same material.  Both clones SHARE the source's material, so
+    // the wall echo inherits color, opacity, and (for lines)
+    // linewidth from whatever the live highlight state pushed onto
+    // those materials.  Only the projected coordinate (x for the
+    // ZY wall, z for the XY wall) is forced to ≈0.
+
+    // Knobs for the wall echo's appearance.  All projected geometry
+    // (dots on both walls AND the line on the XY wall) is rendered
+    // in the same dark, unlit colour so it reads as a true shadow
+    // against the lighter back wall — not a "second chart" fighting
+    // the foreground for attention.  Scale gives the dots a slightly
+    // bigger footprint than the foreground markers.
+    const SHADOW_DARK = 0x0a1428;  // very dark navy
+    const SHADOW_OPACITY = 0.85;
+    const SHADOW_SCALE = 1.6;
+
+    const projectMesh = (m, axis /* 'x' | 'z' */) => {
+      const clone = m.clone();
+      // Swap the foreground's MeshStandardMaterial (which would
+      // pick up scene lighting and emissive glow even when set
+      // dark) for a flat unlit material.  The cloned geometry
+      // keeps the shape variation (sphere / cube / cone) so the
+      // shadow still reads as the right point type.
+      clone.material = new THREE.MeshBasicMaterial({
+        color: SHADOW_DARK,
+        transparent: true,
+        opacity: SHADOW_OPACITY,
+        depthWrite: false,
+      });
+      clone.scale.multiplyScalar(SHADOW_SCALE);
+      if (axis === "x") clone.position.x = eps;
+      else              clone.position.z = eps;
+      // Render AFTER all default-renderOrder transparents.  Without
+      // this, sort-by-distance places foreground meshes between
+      // camera and shadow dots (the foreground sits at higher X,
+      // closer to most camera positions), and the foreground
+      // overpaints the shadows in their wall position.
+      clone.renderOrder = 1;
+      clone.userData = { _isShadowClone: true };
+      this._shadowGroup.add(clone);
+    };
+
+    // Collect zis whose series should be projected onto the XY wall.
+    // A zi may be reached via lock or hover; lock wins so the brighter
+    // foreground state drives the shadow's material.
+    const seriesZis = new Set();
     if (this._locked) {
-      for (const m of (this._lockedColumn || [])) {
-        this._addShadow(eps, m.position.y, m.position.z,
-                        dotScale(m), this._shadowMatLocked);
+      for (const zi of (this._locked.zis || [])) seriesZis.add(zi);
+      // Column → ZY wall: clone each column member, flatten X.
+      for (const m of (this._lockedColumn || [])) projectMesh(m, "x");
+    }
+    const hoverZi = this._hoveredMesh && this._hoveredMesh.userData.zi;
+    if (hoverZi !== undefined && hoverZi !== null && hoverZi !== -1) {
+      seriesZis.add(hoverZi);
+    }
+    // Facet hover: every series whose dim/value matches the row the
+    // user is over.  Comes in as a Set of zi.
+    if (this._hoveredGroup) {
+      for (const zi of this._hoveredGroup) seriesZis.add(zi);
+    }
+    // Hover column (may coincide with locked column; we still want
+    // it to track the hovered position when it differs).
+    for (const m of (this._columnMeshes || [])) projectMesh(m, "x");
+
+    // Series → XY wall: clone every mesh in each highlighted series,
+    // plus clone the live Line2 (and the optional CP "before" segment)
+    // so the wall trace reads identically to the foreground line.
+    if (seriesZis.size) {
+      for (const m of this.pointsGroup.children) {
+        if (m.userData && seriesZis.has(m.userData.zi) && m.userData.isPoint) {
+          projectMesh(m, "z");
+        }
       }
-      const zis = new Set(this._locked.zis || []);
-      if (zis.size) {
-        for (const m of this.pointsGroup.children) {
-          if (zis.has(m.userData.zi)) {
-            this._addShadow(m.position.x, m.position.y, eps,
-                            dotScale(m), this._shadowMatLocked);
+      const w = this.container.clientWidth;
+      const h = this.container.clientHeight;
+      for (const zi of seriesZis) {
+        for (const src of [this._seriesLines[zi], this._cpBeforeLines[zi]]) {
+          if (!src) continue;
+          const projected = this._cloneLineProjected(src, zi, eps);
+          if (projected) {
+            projected.material.resolution.set(w, h);
+            this._shadowGroup.add(projected);
           }
         }
       }
     }
-    // -- hover: column → ZY wall. (No "hovered series" set in the
-    //    current model — _hoveredMesh is a single mesh, not a row.)
-    for (const m of (this._columnMeshes || [])) {
-      this._addShadow(eps, m.position.y, m.position.z,
-                      dotScale(m), this._shadowMatHover);
-    }
     this._requestRender();
+  }
+
+  // Build a flattened-Z copy of a Line2.  Shares the source's
+  // material so the projection inherits whatever colour / opacity /
+  // linewidth the live highlight state has pushed onto it.
+  _cloneLineProjected(src, zi, eps) {
+    // LineGeometry stores positions in an instanced interleaved
+    // buffer that's awkward to read back; cheaper to reconstruct
+    // the polyline from the source series' meshes (we know zi),
+    // sort by X, and rebuild a LineGeometry on the wall.  The
+    // material is *shared* with src, so the projection inherits
+    // colour/opacity/linewidth from whatever the live highlight
+    // state has pushed onto it.
+    const pts = [];
+    for (const m of this.pointsGroup.children) {
+      if (m.userData && m.userData.zi === zi && m.userData.isPoint) {
+        pts.push(m);
+      }
+    }
+    if (pts.length < 2) return null;
+    pts.sort((a, b) => a.position.x - b.position.x);
+    const pos = new Array(pts.length * 3);
+    for (let i = 0; i < pts.length; i++) {
+      pos[i * 3]     = pts[i].position.x;
+      pos[i * 3 + 1] = pts[i].position.y;
+      pos[i * 3 + 2] = eps;
+    }
+    const geo = new LineGeometry();
+    geo.setPositions(pos);
+    // Own a material copy so the wall echo can be recoloured /
+    // thickened without affecting the foreground line.  Same dark
+    // navy as the dot projection so the two read as one shadow.
+    const mat = src.material.clone();
+    mat.color.setHex(0x0a1428);
+    mat.opacity = 0.85;
+    mat.linewidth = (src.material.linewidth || 1) * 1.6;
+    const line = new Line2(geo, mat);
+    line.renderOrder = 1;   // same rationale as the dot clones
+    line.userData = { _isShadowLine: true };
+    return line;
   }
 
   // Central authority for each point mesh's visual state. Considers lock
@@ -1634,6 +1761,11 @@ export class Aurora {
     }
     for (const line of this._cpBeforeLines) {
       if (line) line.material.resolution.set(w, h);
+    }
+    for (const c of this._shadowGroup.children) {
+      if (c.userData && c.userData._isShadowLine) {
+        c.material.resolution.set(w, h);
+      }
     }
     this._requestRender();
   }
