@@ -303,6 +303,13 @@ export class Aurora {
     this._lockedColumn = null;
     this._locked = null;   // { mesh, zi, idx, x }
     this._byIdx = new Map();
+    // Public-facing index space for callers outside aurora.js: a
+    // commit's wall-clock timestamp (ms) maps to its local _byIdx
+    // key. The internal `idx` shifts whenever the rendered window
+    // changes, so external code (the SHA-strip hover, the commit
+    // panel) must NOT use it directly — it'd dereference into a
+    // stale mesh column. ``hoverCommitByTs`` does the translation.
+    this._idxByTs = new Map();
 
     // Flyover tour state. Populated by `startFlyover`; controlled via
     // play/pause/step methods. Emits `flyover_state` events so the HTML
@@ -524,6 +531,7 @@ export class Aurora {
     this._lockedColumn = null;
     this._locked = null;
     this._byIdx = new Map();
+    this._idxByTs = new Map();
     if (this._cursorPlane) this._cursorPlane.visible = false;
     if (this._lockedPlane) this._lockedPlane.visible = false;
     // Cancel any running flyover from a previous dataset.
@@ -893,6 +901,9 @@ export class Aurora {
         // are the "column" the time-cursor plane highlights.
         if (!this._byIdx.has(globalIdx)) this._byIdx.set(globalIdx, []);
         this._byIdx.get(globalIdx).push(mesh);
+        // Stable cross-process index for external callers (see
+        // _idxByTs comment in the constructor).
+        this._idxByTs.set(ts, globalIdx);
         if (isCp) cpLinePosIdx = linePos.length / 3;
         linePos.push(x, y, z);
       }
@@ -1531,6 +1542,15 @@ export class Aurora {
     this.narrator.emit({ type: "point_hovered", point: col[0].userData });
     return true;
   }
+  // Hover by commit timestamp (ms). Stable across window changes —
+  // external callers (e.g. the SHA-strip hover bar) should use this
+  // rather than ``hoverCommitByIdx``, whose ``idx`` is internal to
+  // the current render.
+  hoverCommitByTs(ts) {
+    const idx = this._idxByTs.get(ts);
+    if (idx === undefined) return false;
+    return this.hoverCommitByIdx(idx);
+  }
   clearHover() {
     this._updateTimeCursor(null);
   }
@@ -1546,6 +1566,11 @@ export class Aurora {
     }
     this._enterLock(cp);
     return true;
+  }
+  lockCommitByTs(ts) {
+    const idx = this._idxByTs.get(ts);
+    if (idx === undefined) return false;
+    return this.lockCommitByIdx(idx);
   }
 
   // Set the visible time window. Commits inside [sinceMs, untilMs]
