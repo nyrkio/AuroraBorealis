@@ -282,9 +282,9 @@ export class Aurora {
     const cursorGeo = new THREE.PlaneGeometry(this.axisZ * 1.6, this.axisY * 1.6);
     cursorGeo.rotateY(Math.PI / 2);
     const cursorMat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+      color: 0x5a3a8a,   // dark purple — tints behind side toward lavender
       transparent: true,
-      opacity: 0.18,
+      opacity: 0.50,
       side: THREE.DoubleSide,
       depthWrite: false,
     });
@@ -294,7 +294,7 @@ export class Aurora {
     this.scene.add(this._cursorPlane);
     // Second plane that stays in place when a commit is locked.
     const lockedMat = cursorMat.clone();
-    lockedMat.opacity = 0.25;
+    lockedMat.opacity = 0.70;
     this._lockedPlane = new THREE.Mesh(cursorGeo, lockedMat);
     this._lockedPlane.position.copy(this._cursorPlane.position);
     this._lockedPlane.visible = false;
@@ -312,7 +312,11 @@ export class Aurora {
       side: THREE.DoubleSide,
       depthWrite: false,
     });
-    const xyWallGeo = new THREE.PlaneGeometry(this.axisX, this.axisY);
+    // Back walls span 1.6× the axis extents (same factor the cursor
+    // wall uses), so they reach beyond the data zone on every edge.
+    // Y goes below 0 — shadows of below-axis (negative-deviation)
+    // values land on the wall instead of into empty space.
+    const xyWallGeo = new THREE.PlaneGeometry(this.axisX * 1.6, this.axisY * 1.6);
     const xyWall = new THREE.Mesh(xyWallGeo, wallMat);
     xyWall.position.set(this.axisX / 2, this.axisY / 2, 0);
     // Force the walls to render BEFORE everything else.  Without
@@ -324,7 +328,7 @@ export class Aurora {
     // draw queue so the dots always paint on top.
     xyWall.renderOrder = -1;
     this.scene.add(xyWall);
-    const zyWallGeo = new THREE.PlaneGeometry(this.axisZ, this.axisY);
+    const zyWallGeo = new THREE.PlaneGeometry(this.axisZ * 1.6, this.axisY * 1.6);
     zyWallGeo.rotateY(Math.PI / 2);
     const zyWall = new THREE.Mesh(zyWallGeo, wallMat);
     zyWall.position.set(0, this.axisY / 2, this.axisZ / 2);
@@ -419,7 +423,13 @@ export class Aurora {
     this._animate = this._animate.bind(this);
     this._rafId = null;
     // Re-render whenever OrbitControls moves the camera (includes damping frames).
-    this.camController.controls.addEventListener('change', () => this._requestRender());
+    // Also refresh the cursor-wall split: as the camera rotates, which side
+    // of the wall is "in front" changes, so foreground meshes need to be
+    // re-bucketed into the before/after renderOrder partitions.
+    this.camController.controls.addEventListener('change', () => {
+      this._updateForegroundOrdering();
+      this._requestRender();
+    });
     this._requestRender();
 
     // Stub hooks the post-v0 UI will call.
@@ -1068,6 +1078,7 @@ export class Aurora {
     this._hoveredGroup = set.size > 0 ? set : null;
     this._applyHoverState();
     this._rebuildShadows();
+    this._updateForegroundOrdering();
   }
 
   clearHoverGroup() {
@@ -1075,6 +1086,7 @@ export class Aurora {
     this._hoveredGroup = null;
     this._applyHoverState();
     this._rebuildShadows();
+    this._updateForegroundOrdering();
   }
 
   _onPointerMove(e) {
@@ -1150,7 +1162,170 @@ export class Aurora {
     }
     for (const m of newCol) this._applyMeshState(m);
     this._rebuildShadows();
+    this._updateForegroundOrdering();
     this._requestRender();
+  }
+
+  // ---- cursor wall depth split -----------------------------------
+  // The cursor wall is a transparent panel — by default Three.js's
+  // back-to-front sort places it somewhere in the middle of the
+  // foreground meshes by centroid distance, but a single
+  // renderOrder can't capture "in front vs behind the wall" for
+  // every mesh.  Solution: split the foreground into two passes
+  // around the wall by bucketing each mesh into renderOrder = -0.5
+  // (behind, draws BEFORE the wall, gets tinted by the overlay) or
+  // renderOrder = 1 (in front, draws AFTER the wall, unaffected).
+  // The wall itself stays at renderOrder 0.  No depthWrite:true
+  // needed — the explicit order handles it.
+  //
+  // "In front of the wall from camera POV" is computed per-frame
+  // (per camera change actually): the sign of (mesh.x - wallX)
+  // tells us which X-side of the wall the mesh sits on, and the
+  // sign of camDir.x tells us which way the camera is looking.
+  // The mesh is in front when those two signs disagree.
+  _updateForegroundOrdering() {
+    // Pick the active divider: locked > cursor > none.  When neither
+    // is visible, restore the default renderOrder so future renders
+    // don't keep stale partition state.
+    let wallX;
+    if (this._lockedPlane && this._lockedPlane.visible) {
+      wallX = this._lockedPlane.position.x;
+    } else if (this._cursorPlane && this._cursorPlane.visible) {
+      wallX = this._cursorPlane.position.x;
+    } else {
+      for (const m of this.pointsGroup.children) {
+        if (m.renderOrder !== 0) m.renderOrder = 0;
+      }
+      return;
+    }
+    if (!this._scratchVec3) this._scratchVec3 = new THREE.Vector3();
+    this.camera.getWorldDirection(this._scratchVec3);
+    const camDirX = this._scratchVec3.x;
+    // Lock vs hover hierarchy:
+    //   - The hovered / locked COLUMN (the markers AT the wall's
+    //     X — one per series) is always in front.  Clicking or
+    //     hovering a commit means the user wants that commit's
+    //     row of values fully visible regardless of camera angle.
+    //   - Everything else (including the hovered / locked SERIES
+    //     across X, and any facet-hovered group) is X-partitioned
+    //     so the wall genuinely splits the scene: one side tints,
+    //     the other doesn't.  Which side is which flips with the
+    //     camera direction.
+    const inFrontMeshes = new Set();
+    if (this._lockedColumn) {
+      for (const m of this._lockedColumn) inFrontMeshes.add(m);
+    }
+    if (this._columnMeshes) {
+      for (const m of this._columnMeshes) inFrontMeshes.add(m);
+    }
+    for (const m of this.pointsGroup.children) {
+      // Only operate on point markers.  Lines span multiple X
+      // values, so a single side classification doesn't make
+      // sense; leave them at the default sort and accept a small
+      // ordering glitch where a line crosses the wall.
+      if (!m.userData || m.userData.isPoint !== true) continue;
+      let desired;
+      if (inFrontMeshes.has(m)) {
+        desired = 1;
+      } else {
+        const dx = m.position.x - wallX;
+        const inFront = dx * camDirX < 0;
+        desired = inFront ? 1 : -0.5;
+      }
+      if (m.renderOrder !== desired) m.renderOrder = desired;
+    }
+    // Series-line handling.  A Line2 is a single object — sorting
+    // alone can't split it across the wall.  For each highlighted
+    // series (locked, facet-hovered, or single-mesh hover), build
+    // two Line2 halves cut at the wall X and assign renderOrder
+    // per half so the line genuinely wall-splits like its markers.
+    // The original Line2 is hidden while halves are live.
+    const splitZis = new Set();
+    if (this._locked && this._locked.zis) {
+      for (const zi of this._locked.zis) splitZis.add(zi);
+    }
+    if (this._hoveredGroup) {
+      for (const zi of this._hoveredGroup) splitZis.add(zi);
+    }
+    if (this._hoveredMesh && this._hoveredMesh.userData) {
+      splitZis.add(this._hoveredMesh.userData.zi);
+    }
+    if (!this._splitLines) this._splitLines = new Map();
+
+    // Dispose stale halves: zi no longer highlighted, or wallX
+    // changed (need a fresh split at the new X).
+    const toRemove = [];
+    for (const [zi, entry] of this._splitLines) {
+      if (!splitZis.has(zi) || entry.wallX !== wallX) toRemove.push(zi);
+    }
+    for (const zi of toRemove) {
+      const entry = this._splitLines.get(zi);
+      this.pointsGroup.remove(entry.left);
+      this.pointsGroup.remove(entry.right);
+      entry.left.geometry.dispose();
+      entry.right.geometry.dispose();
+      this._splitLines.delete(zi);
+      if (this._seriesLines[zi]) {
+        this._seriesLines[zi].visible = true;
+        this._seriesLines[zi].renderOrder = 0;
+      }
+    }
+
+    // Build halves for newly-highlighted zis.  Halves share the
+    // source line's material, so resolution updates from the resize
+    // handler propagate automatically.
+    for (const zi of splitZis) {
+      if (this._splitLines.has(zi)) continue;
+      const src = this._seriesLines[zi];
+      if (!src) continue;
+      const pts = [];
+      for (const mm of this.pointsGroup.children) {
+        if (mm.userData?.isPoint === true && mm.userData.zi === zi) {
+          pts.push(mm);
+        }
+      }
+      if (pts.length < 2) continue;
+      pts.sort((a, b) => a.position.x - b.position.x);
+      let splitIdx = pts.findIndex(p => p.position.x >= wallX);
+      if (splitIdx <= 0 || splitIdx >= pts.length) continue;
+      const leftPos = [], rightPos = [];
+      for (let i = 0; i < splitIdx; i++) {
+        leftPos.push(pts[i].position.x, pts[i].position.y, pts[i].position.z);
+      }
+      for (let i = splitIdx; i < pts.length; i++) {
+        rightPos.push(pts[i].position.x, pts[i].position.y, pts[i].position.z);
+      }
+      if (leftPos.length < 6 || rightPos.length < 6) continue;
+      const leftGeo = new LineGeometry();
+      leftGeo.setPositions(leftPos);
+      const leftLine = new Line2(leftGeo, src.material);
+      leftLine.userData = { _isSplitLine: true };
+      const rightGeo = new LineGeometry();
+      rightGeo.setPositions(rightPos);
+      const rightLine = new Line2(rightGeo, src.material);
+      rightLine.userData = { _isSplitLine: true };
+      this.pointsGroup.add(leftLine);
+      this.pointsGroup.add(rightLine);
+      this._splitLines.set(zi, { left: leftLine, right: rightLine, wallX });
+      src.visible = false;
+    }
+
+    // Assign renderOrder per camera side.  For the left half
+    // (x < wallX): in front when camDirX > 0 (camera looking
+    // toward +X, so smaller X is closer).  Right half mirrors.
+    for (const entry of this._splitLines.values()) {
+      entry.left.renderOrder  = (camDirX > 0) ? 1 : -0.5;
+      entry.right.renderOrder = (camDirX < 0) ? 1 : -0.5;
+    }
+
+    // Non-split series lines stay at default sort.
+    for (let zi = 0; zi < this._seriesLines.length; zi++) {
+      if (this._splitLines.has(zi)) continue;
+      const ml = this._seriesLines[zi];
+      const bl = this._cpBeforeLines[zi];
+      if (ml && ml.renderOrder !== 0) ml.renderOrder = 0;
+      if (bl && bl.renderOrder !== 0) bl.renderOrder = 0;
+    }
   }
 
   // ---- back-wall shadows -----------------------------------------
@@ -1233,12 +1408,15 @@ export class Aurora {
       clone.scale.multiplyScalar(SHADOW_SCALE);
       if (axis === "x") clone.position.x = eps;
       else              clone.position.z = eps;
-      // Render AFTER all default-renderOrder transparents.  Without
-      // this, sort-by-distance places foreground meshes between
-      // camera and shadow dots (the foreground sits at higher X,
-      // closer to most camera positions), and the foreground
-      // overpaints the shadows in their wall position.
-      clone.renderOrder = 1;
+      // Sit just above the back walls (renderOrder=-1) but below
+      // the cursor wall (renderOrder=0) and the foreground meshes
+      // (renderOrder ±0.5 / 1).  This way the cursor wall paints
+      // over the shadow where they overlap in screen space — the
+      // shadow looks like it's behind the cursor, consistent with
+      // the rest of the scene.  Without this, sort-by-distance
+      // places shadow dots near the back wall but the cursor wall
+      // would still draw them on top.
+      clone.renderOrder = -0.75;
       clone.userData = { _isShadowClone: true };
       this._shadowGroup.add(clone);
     };
@@ -1325,7 +1503,7 @@ export class Aurora {
     mat.opacity = 0.85;
     mat.linewidth = (src.material.linewidth || 1) * 1.6;
     const line = new Line2(geo, mat);
-    line.renderOrder = 1;   // same rationale as the dot clones
+    line.renderOrder = -0.75;   // same rationale as the dot clones
     line.userData = { _isShadowLine: true };
     return line;
   }
@@ -1336,6 +1514,13 @@ export class Aurora {
     const inLocked = this._lockedColumn ? this._lockedColumn.includes(m) : false;
     const inHover  = this._columnMeshes ? this._columnMeshes.includes(m) : false;
     const isHot    = m === this._hoveredMesh;
+    // Locked SERIES (every X, not just the locked column) — bump
+    // marker opacity to 1.0 so the row stays crisp when it crosses
+    // the cursor / locked wall.  Without this, a 0.9-opacity marker
+    // lets ~10% of the dark-purple wall bleed through and the user
+    // perceives the locked row as "tinted same as the others".
+    const inLockedSeries = this._locked && this._locked.zis
+      && this._locked.zis.includes(m.userData.zi);
     const base = m.userData.baseScale || 1;
     let scale = base;
     let opacity = m.userData._baseOpacity;
@@ -1344,6 +1529,8 @@ export class Aurora {
       // Change points on the time-cursor plane pop larger than their
       // neighbors — 6× vs the 4× of normal column points.
       scale = m.userData.isChangePoint ? 6 : Math.max(scale, 4);
+    } else if (inLockedSeries) {
+      opacity = 1.0;   // no scale bump — just keep the line crisp
     }
     if (isHot) {
       // Hover always adds emphasis. In a column, add a bonus on top of
@@ -1417,9 +1604,20 @@ export class Aurora {
     this._lockedPlane.visible = true;
     this._lockedColumn = this._byIdx.get(mesh.userData.idx) || [];
     for (const m of this._lockedColumn) this._applyMeshState(m);
+    // Re-apply state on every marker of the locked series so the
+    // `inLockedSeries` opacity bump in _applyMeshState reaches the
+    // row's markers outside the column — without this, they stay
+    // at 0.9 opacity and 10% of the wall bleeds through.
+    const lockedZis = new Set(this._locked.zis);
+    for (const m of this.pointsGroup.children) {
+      if (m.userData && m.userData.isPoint && lockedZis.has(m.userData.zi)) {
+        this._applyMeshState(m);
+      }
+    }
     // Locked series must read as HOT regardless of current hover.
     this._applyHoverState();
     this._rebuildShadows();
+    this._updateForegroundOrdering();
     // Pin the info box to the clicked point (or all CPs on this commit
     // for a flyover stop).
     this.narrator.emit({
@@ -1433,11 +1631,22 @@ export class Aurora {
     if (!this._locked) return;
     this._lockedPlane.visible = false;
     const old = this._lockedColumn || [];
+    const oldZis = new Set(this._locked.zis || []);
     this._locked = null;
     this._lockedColumn = null;
     for (const m of old) this._applyMeshState(m);
+    // Reset every mesh that was in the previously-locked series so
+    // its opacity goes back to its baseline.
+    if (oldZis.size) {
+      for (const m of this.pointsGroup.children) {
+        if (m.userData && m.userData.isPoint && oldZis.has(m.userData.zi)) {
+          this._applyMeshState(m);
+        }
+      }
+    }
     this._applyHoverState();
     this._rebuildShadows();
+    this._updateForegroundOrdering();
   }
 
   // ---------- Flyover tour ----------
@@ -1650,7 +1859,7 @@ export class Aurora {
   }
 
   _applyHoverState(neighborsFaded = false) {
-    const HOT = 0.95, WARM = 0.65, DIM_OP = 0.08;
+    const HOT = 1.0, WARM = 0.65, DIM_OP = 0.08;
     const HOT_W = 3.5, WARM_W = 2;
     const lockedZis = this._locked ? new Set(this._locked.zis) : null;
     // In locked mode: no WARM neighbors at all — only the locked line(s)
